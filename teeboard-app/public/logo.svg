@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="TeeBoard logo">
+  <rect width="64" height="64" rx="14" fill="#0F5132" />
+  <circle cx="44" cy="22" r="7" fill="#C9A227" />
+  <path d="M14 34h24l-6 20h-6l2.5-14H16.5Z" fill="#FAF8F3" />
+  <path d="M20 24h10v6H20z" fill="#FAF8F3" />
+</svg>
