@@ -1,6 +1,7 @@
 import { Hero } from "@/components/landing/hero";
 import { DemoVideo } from "@/components/landing/demo-video";
 import { Pricing } from "@/components/landing/pricing";
+import { BookingSection } from "@/components/landing/booking-section";
 import { WaitlistSection } from "@/components/landing/waitlist-section";
 
 type LandingPageProps = {
@@ -21,6 +22,7 @@ export default async function LandingPage({ searchParams }: LandingPageProps) {
       <Hero />
       <DemoVideo />
       <Pricing />
+      <BookingSection />
       <WaitlistSection utmSource={utmSource} />
     </main>
   );
