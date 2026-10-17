@@ -1,0 +1,155 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter);
+  --font-heading: var(--font-fraunces);
+  --color-brand: var(--brand);
+  --color-brand-gold: var(--brand-gold);
+  --color-cream: var(--cream);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --brand: #0f5132;
+  --brand-gold: #c9a227;
+  --cream: #faf8f3;
+
+  --background: var(--cream);
+  --foreground: #16261c;
+  --card: #ffffff;
+  --card-foreground: #16261c;
+  --popover: #ffffff;
+  --popover-foreground: #16261c;
+  --primary: #0f5132;
+  --primary-foreground: #faf8f3;
+  --secondary: #ede8dc;
+  --secondary-foreground: #0f5132;
+  --muted: #efeae0;
+  --muted-foreground: #55655b;
+  --accent: #f3ecd6;
+  --accent-foreground: #3d2f06;
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: #e3dccb;
+  --input: #e3dccb;
+  --ring: #0f5132;
+  --chart-1: #0f5132;
+  --chart-2: #c9a227;
+  --chart-3: #1e6b4c;
+  --chart-4: #8a6e14;
+  --chart-5: #55655b;
+  --radius: 0.625rem;
+  --sidebar: #f6f2e9;
+  --sidebar-foreground: #16261c;
+  --sidebar-primary: #0f5132;
+  --sidebar-primary-foreground: #faf8f3;
+  --sidebar-accent: #f3ecd6;
+  --sidebar-accent-foreground: #3d2f06;
+  --sidebar-border: #e3dccb;
+  --sidebar-ring: #0f5132;
+}
+
+/* Dark palette reserved for the TV broadcast mode (activated by adding the
+   `dark` class; no surface uses it yet). */
+.dark {
+  --brand: #2e8b63;
+  --brand-gold: #c9a227;
+  --cream: #faf8f3;
+
+  --background: #0a0f0c;
+  --foreground: #edeae0;
+  --card: #101711;
+  --card-foreground: #edeae0;
+  --popover: #101711;
+  --popover-foreground: #edeae0;
+  --primary: #2e8b63;
+  --primary-foreground: #06110b;
+  --secondary: #1a241d;
+  --secondary-foreground: #edeae0;
+  --muted: #1a241d;
+  --muted-foreground: #9aa79e;
+  --accent: #1f2b23;
+  --accent-foreground: #c9a227;
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: rgb(250 248 243 / 12%);
+  --input: rgb(250 248 243 / 15%);
+  --ring: #c9a227;
+  --chart-1: #2e8b63;
+  --chart-2: #c9a227;
+  --chart-3: #1b5e43;
+  --chart-4: #8a6e14;
+  --chart-5: #9aa79e;
+  --sidebar: #101711;
+  --sidebar-foreground: #edeae0;
+  --sidebar-primary: #2e8b63;
+  --sidebar-primary-foreground: #06110b;
+  --sidebar-accent: #1f2b23;
+  --sidebar-accent-foreground: #c9a227;
+  --sidebar-border: rgb(250 248 243 / 12%);
+  --sidebar-ring: #c9a227;
+}
+
+/* Numeric display utility: all scores, prices, and stats use tabular-nums. */
+@utility numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-heading;
+  }
+}
