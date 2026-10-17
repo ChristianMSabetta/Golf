@@ -77,12 +77,19 @@ npm run lint    # ESLint
 src/
   app/
     (landing)/       # landing/marketing route group (layout + page)
+    api/waitlist/    # POST route handler validating waitlist signups (Zod)
     layout.tsx       # root layout: fonts (Fraunces/Inter) and metadata
     globals.css      # Tailwind theme: brand design tokens and dark TV palette
   components/
-    ui/              # shadcn/ui primitives (button, card, input, label, …)
+    landing/         # landing page sections: header, hero, demo video slot,
+                     # pricing, waitlist form, footer
+    ui/              # shadcn/ui primitives (button, card, input, label, select …)
   lib/
     brand.ts         # env-var-backed brand config (product name, domain, sender, logo)
+    us-states.ts     # US state codes/names for the waitlist state selector
+    waitlist/
+      schema.ts      # Zod signup schema + success-message copy (shared client/server)
+      server.ts      # server-only signup capture; persistence wiring attaches here
     utils.ts         # shared helpers (cn)
 public/              # static assets (logo.svg)
 ```
