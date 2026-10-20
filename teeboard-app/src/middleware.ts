@@ -1,12 +1,16 @@
-import { NextResponse, type NextRequest } from "next/server";
+import type { NextRequest } from "next/server";
+import { updateSession } from "@/lib/supabase/middleware";
 
 /**
- * Content-Security-Policy for every non-asset response. A per-request nonce
- * lets Next.js bootstrap scripts run while the rest of the policy stays
- * locked down. Sources:
- * - app.cal.com — the Cal.com inline embed (script, iframe, images, XHR)
- * - *.supabase.co — Supabase API/Realtime called from the browser
- * Resend is called server-side only and needs no browser sources.
+ * Per-request middleware:
+ * 1. Refreshes the Supabase Auth session so every request carries fresh
+ *    access tokens before reaching the app (src/lib/supabase/middleware.ts).
+ * 2. Applies a nonce-based Content-Security-Policy to every non-asset
+ *    response. A per-request nonce lets Next.js bootstrap scripts run while
+ *    the rest of the policy stays locked down. Sources:
+ *    - app.cal.com — the Cal.com inline embed (script, iframe, images, XHR)
+ *    - *.supabase.co — Supabase API/Realtime called from the browser
+ *    Resend is called server-side only and needs no browser sources.
  */
 const CSP_DIRECTIVES = [
   "default-src 'self'",
@@ -50,26 +54,26 @@ function buildDevCsp(): string {
     .join("; ");
 }
 
-export function middleware(request: NextRequest) {
-  const nonce = crypto.randomUUID().replace(/-/g, "");
-
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set("x-nonce", nonce);
-
-  const response = NextResponse.next({ request: { headers: requestHeaders } });
+export async function middleware(request: NextRequest) {
+  const response = await updateSession(request);
   response.headers.set(
     "Content-Security-Policy",
-    process.env.NODE_ENV === "development" ? buildDevCsp() : buildCsp(nonce),
+    process.env.NODE_ENV === "development" ? buildDevCsp() : buildCsp(nonce()),
   );
+
   return response;
+}
+
+function nonce(): string {
+  return crypto.randomUUID().replace(/-/g, "");
 }
 
 export const config = {
   matcher: [
     // Skip immutable static assets and the public brand assets; every other
-    // route (pages and API handlers) gets the CSP. Baseline hardening
-    // headers (nosniff, frame options, referrer, permissions) for all
-    // routes come from next.config.ts.
+    // route (pages and API handlers) gets the session refresh + CSP. Baseline
+    // hardening headers (nosniff, frame options, referrer, permissions) for
+    // all routes come from next.config.ts.
     "/((?!_next/static|_next/image|favicon.ico|logo.svg).*)",
   ],
 };
