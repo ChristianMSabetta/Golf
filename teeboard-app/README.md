@@ -37,8 +37,9 @@ Apply the migrations in order to your Supabase project: open the Supabase dashbo
 
 1. `20260101000000_create_waitlist_table.sql` — the Phase 0 `waitlist` table plus an insert-only RLS policy for the anon role (signups in, nothing out).
 2. `20260101000100_create_phase1_schema.sql` — the full Phase 1 schema (see [Data Model](#data-model)).
+3. `20260101000200_enable_rls_policies.sql` — explicit per-role grants and cross-club isolation policies on every table (see [Row Level Security](#row-level-security)).
 
-Row Level Security is enabled on every table. The Phase 1 tables ship with **no policies** — deny-by-default for `anon`/`authenticated` direct table access — so unauthenticated players cannot read or write anything through PostgREST. The only anon write path is the `submit_score` RPC (granted `execute` to `anon`/`authenticated`), a `security definer` function with an empty `search_path` that validates a 32-char crypto-random group token and rate-limits writes to 60 requests/minute per token. Cross-club isolation policies land in M2-T002.
+Row Level Security is enabled on every table with explicit per-role grants (see [Row Level Security](#row-level-security)): `anon` gets nothing except the waitlist insert, `authenticated` (= club staff) is isolated to its own club's rows on every table, and superadmin access is gated by `profiles.is_superadmin`. The only anon write path is the `submit_score` RPC (granted `execute` to `anon`/`authenticated`), a `security definer` function with an empty `search_path` that validates a 32-char crypto-random group token and rate-limits writes to 60 requests/minute per token. Cross-club isolation is proven by the automated pgTAP suites in `supabase/tests/` (see [Testing the database](#testing-the-database)).
 
 ### Resend wiring
 
@@ -99,6 +100,18 @@ All configuration is environment-driven; nothing is hardcoded in components.
 
 The full schema lives in `supabase/migrations/20260101000100_create_phase1_schema.sql`: **21 domain tables plus 2 server-side security state tables**, all with Row Level Security enabled. Types are Postgres enums (`staff_role`, `tee_gender`, `event_status`, `scoring_format`) with check constraints and foreign keys throughout.
 
+### Row Level Security
+
+Policies arrive in `supabase/migrations/20260101000200_enable_rls_policies.sql` as three explicit layers:
+
+- **Grants first.** Policies can only filter rows, so every table revokes all privileges from `anon`/`authenticated` and grants back the minimum surface each role needs (`service_role` keeps full access everywhere — it bypasses RLS and never leaves the server). `anon` holds nothing except the waitlist insert; players and scorers never get an auth account and never see a table path.
+- **Per-operation policies.** `authenticated` (= club staff) gets `select`/`insert`/`update`/`delete` policies per table, all filtering on club membership via the row's `club_id` (or the club inherited through `courses`/`events`/`event_players`/`leagues`). Child tables like `holes` or `event_players` inherit their club through the parent, so a policy on `players` and one on `holes` use the same predicate root. Append-only tables (`score_audit`, `superadmin_audit_log`) get no `update`/`delete` grants at all — the audit trail cannot be rewritten from any client.
+- **Helper predicates.** Policies call `private._is_staff_of(club)`, `private._is_superadmin()` and friends instead of inlining `select … from profiles` — a `security definer` function cannot re-enter (or be blocked by) the RLS of the table the calling policy guards, so policies never recurse. `execute` on the helpers is revoked from `public`/`anon` and granted only to `authenticated`/`service_role`.
+
+Super-admin access is gated by `profiles.is_superadmin` (a dedicated policy per table, never a client-supplied role claim). Tenant roots are stricter still: `clubs` is read-only for staff (first-run club creation and owner re-linking are server-side operations via the service role), and `profiles` self-signup can only create a fresh `event_manager` profile tied to one's own `auth.users` row with `club_id null` — role and superadmin flag are never client-writable.
+
+`rate_limit_state` has no authenticated read policy at all (RPC-only state), and `pin_attempts` is read/update-only for the owning club's staff with inserts service-role-only — the 5-strikes/10-minutes lockout logic itself lands with the authorization layer (M2-T003).
+
 ### Tenant & staff
 
 | Table | Purpose |
@@ -152,7 +165,7 @@ The full schema lives in `supabase/migrations/20260101000100_create_phase1_schem
 
 ### submit_score(token, hole, strokes, client_ts)
 
-The security-definer RPC (`security definer set search_path = ''`) is the **only** write path a group token can reach: execute is revoked from `public` and granted solely to `anon`/`authenticated`/`service_role`, while every table has RLS enabled with no policies so direct table writes raise RLS violations. In order it enforces:
+The security-definer RPC (`security definer set search_path = ''`) is the **only** write path a group token can reach: execute is revoked from `public` and granted solely to `anon`/`authenticated`/`service_role`, while every table has RLS enabled with explicit policies so direct table writes from any client raise RLS violations. In order it enforces:
 
 1. **Token shape** — 32-char lowercase hex (`^[0-9a-f]{32}$`), matching the `event_players.group_token` constraint; tokens are crypto-random values, never derived from user input.
 2. **Token → live entry** — the token must resolve to an `event_players` row that is not revoked, on an event that is `scheduled` or `live` (completion or archival blocks further writes).
@@ -165,11 +178,34 @@ Every mutation (accepted or stale-rejected) appends a `score_audit` row, and the
 ## Running the Project
 
 ```bash
-npm run dev     # development server at http://localhost:3000
-npm run build   # production build
-npm run start   # serve the production build
-npm run lint    # ESLint
+npm run dev        # development server at http://localhost:3000
+npm run build      # production build
+npm run start      # serve the production build
+npm run lint       # ESLint
+npm run test:rls   # pgTAP RLS/isolation suites (see Testing the database)
 ```
+
+## Testing the database
+
+The pgTAP suites under `supabase/tests/` prove the tenant-isolation guarantees automatically:
+
+- `rls_grants.test.sql` — structural: RLS enabled on all 23 tables, explicit policies on every one, `anon` holds no privileges beyond the waitlist insert, `service_role` full access, `submit_score` execution granted to exactly `anon`/`authenticated`/`service_role`.
+- `rls_isolation.test.sql` — seeds two complete clubs (A and B) with owners, courses, events, players, groups, scores, side games, leagues, logs, and PIN state, then asserts on **every table** that club A's staff can read/write only club A's rows, that cross-club reads return nothing, that cross-club writes are denied or match zero rows (with the target row proven intact afterward), that the audit trails are append-only, and that superadmin reach is gated on `profiles.is_superadmin`.
+- `submit_score_rpc.test.sql` — token validity (unknown, malformed, non-hex), bounds, revocation and event-completion invalidation, `client_ts` conflict resolution (a stale replay never overwrites a newer score), and the 60 req/min per-token rate limit surfacing as `PT429` (HTTP 429), including per-token budget isolation.
+
+Run them against your configured Supabase instance:
+
+```bash
+supabase test db        # on Supabase (pgTAP provisioned by the platform)
+```
+
+or against any plain Postgres 15+ (CI or laptop) with `psql` on PATH:
+
+```bash
+npm run test:rls       # uses POSTGRES_URL (see Environment Variables)
+```
+
+The runner creates a throwaway scratch database, applies `scripts/rls-bootstrap.sql` (an idempotent no-op on Supabase: it only stubs the `anon`/`authenticated`/`service_role` roles, the `auth.users` table, and `auth.uid()`, which the platform provides) plus all migrations in filename order, runs the suites, and drops the scratch database again — nothing is left behind.
 
 ## Project Structure
 
@@ -199,7 +235,14 @@ src/
   middleware.ts      # nonce-based Content-Security-Policy
 supabase/
   migrations/        # versioned SQL migrations applied to the Supabase project
-                     # (Phase 0 waitlist + Phase 1 full schema incl. submit_score RPC)
+                     # (Phase 0 waitlist, Phase 1 full schema incl. submit_score
+                     #  RPC, Phase 1 RLS grants + cross-club isolation policies)
+  tests/             # pgTAP suites: RLS grants matrix, cross-club isolation,
+                     # submit_score RPC (run via `supabase test db` or test:rls)
+scripts/
+  rls-bootstrap.sql  # idempotent test bootstrap (roles, auth.uid(), pgtap) —
+                     # a no-op on Supabase, a shim for plain Postgres
+  run-rls-tests.mjs  # scratch-database runner for supabase/tests (test:rls)
 public/              # static assets (logo.svg)
 ```
 
