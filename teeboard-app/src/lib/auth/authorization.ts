@@ -1,5 +1,6 @@
 import "server-only";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import type { StaffRole } from "@/lib/supabase/server";
 import { getStaffAuthContext } from "@/lib/supabase/server";
 
@@ -29,21 +30,26 @@ const UNAUTHENTICATED_REASON = "Sign in to continue.";
  * - superadmin — the profiles.is_superadmin flag, never a client claim
  * - scorer — PIN-only, no Supabase Auth user (src/lib/scorer/pin.ts)
  * - player — group-token-only, no account at all (submit_score RPC)
+ *
+ * Cached per request: the admin layout, pages, and server actions all call
+ * this during one render, and the profile row is fetched exactly once.
  */
-export async function getStaff(): Promise<AuthenticatedStaff | null> {
-  const { user, profile } = await getStaffAuthContext();
-  if (!user || !profile) return null;
+export const getStaff = cache(
+  async (): Promise<AuthenticatedStaff | null> => {
+    const { user, profile } = await getStaffAuthContext();
+    if (!user || !profile) return null;
 
-  return Object.freeze({
-    userId: user.id,
-    profileId: profile.id,
-    clubId: profile.club_id,
-    fullName: profile.full_name,
-    email: profile.email,
-    role: profile.role,
-    isSuperadmin: profile.is_superadmin,
-  });
-}
+    return Object.freeze({
+      userId: user.id,
+      profileId: profile.id,
+      clubId: profile.club_id,
+      fullName: profile.full_name,
+      email: profile.email,
+      role: profile.role,
+      isSuperadmin: profile.is_superadmin,
+    });
+  },
+);
 
 export async function requireStaff(): Promise<AuthenticatedStaff> {
   const staff = await getStaff();

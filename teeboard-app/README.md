@@ -117,7 +117,7 @@ Super-admin access is gated by `profiles.is_superadmin` (a dedicated policy per 
 
 | Table | Purpose |
 | --- | --- |
-| `clubs` | Tenant root: name, slug, logo, primary color, timezone; plan/billing columns (`plan`, `billing_status`, `stripe_customer_id`) exist only as data model — **no billing logic in any request path** (pilots run free) |
+| `clubs` | Tenant root: name, slug, logo, primary color, timezone; plan/billing columns (`plan`, `billing_status`, `stripe_customer_id`) exist only as data model — **no billing logic in any request path** (pilots run free). The logo/primary-color/timezone columns are the **single source of club branding** consumed by the admin app today and by leaderboards, PDF scorecards, and transactional email in later phases (resolved through `resolveClubBrand` in `src/lib/brand.ts`) |
 | `profiles` | Staff/admin users mapped 1:1 to `auth.users`; five-role model via `staff_role` enum + `is_superadmin` flag; one owner per club enforced by partial unique index |
 | `staff_invitations` | Data model only (Phase 1): club, email, role, token, expiry, status — invitation **flows** land in Phase 3 |
 | `superadmin_audit_log` | Data model only (Phase 1): actor, action, target, JSONB metadata — impersonation **logic** lands in Phase 3 |
@@ -198,6 +198,15 @@ Supabase Auth handles staff/admin sign-in with **both magic link and password** 
 
 **Scorer PIN lockout** (`verifyScorerPin`): a reusable server-side authorization primitive — no scorer-facing UI ships in this milestone (the `/e/[shortCode]/score` page arrives in Phase 4). It verifies the PIN against the event's salted hash (`sha256(`${salt}:${pin}`)`, constant-time) with state stored server-side in `pin_attempts`: **5 failed attempts lock the `(event_id, identifier)` pair for 10 minutes**; a successful verification resets the counter. Only the service-role client may insert or reset `pin_attempts` rows (staff RLS is read/update, `anon` has no privileges at all), so lockout state can never be forged or cleared from a browser. The `scorer_pin_lockout.test.sql` pgTAP suite proves the state machine and its grants.
 
+## Admin App
+
+The authenticated admin app lives under `src/app/admin/` and is **server-side protected end to end**: the admin layout (`src/app/admin/layout.tsx`) authenticates every admin request through `requireStaff()` before any content renders — an unauthenticated or insufficient-role visitor is redirected to `/sign-in` before the page streams. The shell renders the section navigation (Dashboard, Club settings) plus the top bar with the club identity and sign-out.
+
+- **Dashboard (`/admin`)** — post-sign-in landing for owners and staff: the signed-in identity and role plus the club summary (name, timezone, contact) read server-side from the database.
+- **Club settings (`/admin/settings`)** — club profile editing (name, logo URL, primary color, timezone) validated by the shared Zod schema (`src/lib/club/schema.ts`) on both client and server. Saves run through the `updateClubProfile` server action, which re-authorizes server-side (owners and head pros only) and persists via the service-role client because `clubs` is read-only under RLS — the tenant root is only ever written by trusted server code. Success revalidates the admin layout so the new branding renders immediately.
+
+**Club branding** flows from one place: `resolveClubBrand` (`src/lib/brand.ts`) resolves a club's stored settings into a typed `ClubBrand` (name, logo URL, normalized `#RRGGBB` primary color, IANA timezone), falling back to the env-var-backed product defaults for anything unset. No component hardcodes a club name, color, or logo. Staff management (invitations, plan limits) and super-admin surfaces arrive in Phase 3.
+
 ## Running the Project
 
 ```bash
@@ -238,12 +247,16 @@ src/
   app/
     (landing)/       # landing/marketing route group (layout + page)
     (auth)/          # sign-in + sign-up pages (magic link & password)
-    admin/           # server-protected admin entry (skeleton; M2-T004 builds the shell)
+    admin/
+      layout.tsx     # server-authenticated admin shell (nav + top bar)
+      page.tsx       # post-sign-in dashboard (club summary, get-started)
+      settings/      # club profile settings page (server component + form)
     auth/callback/   # magic-link code → session exchange (server-side)
     api/waitlist/    # POST route handler validating waitlist signups (Zod)
     layout.tsx       # root layout: fonts (Fraunces/Inter) and metadata
     globals.css      # Tailwind theme: brand design tokens and dark TV palette
   components/
+    admin/           # admin shell: nav, top bar, sign-out, club profile form
     auth/            # sign-in + sign-up forms (useActionState server actions)
     landing/         # landing sections: header, hero, demo video slot, pricing,
                      # Cal.com booking section + inline embed, waitlist, footer
@@ -254,8 +267,12 @@ src/
       authorization.ts  # server-side five-role model & club-scoped role gates
       first-run.ts   # first-run club creation + owner profile provisioning (service role)
       actions.ts     # server actions: password/magic-link sign-in, sign-out, owner sign-up
-    brand.ts         # env-var-backed brand config (product name, domain, sender, logo)
+    brand.ts         # env-var-backed brand config + resolveClubBrand (club branding single source)
     cal-embed/       # Cal.com embed loader and event-link normalization
+    club/
+      schema.ts      # shared client/server Zod schema for club profile settings
+      server.ts      # club row loader via the request client (RLS-scoped reads)
+      actions.ts     # updateClubProfile server action (role-gated, service-role write)
     scorer/
       pin.ts         # server-side scorer PIN verification + 5-strikes/10-min lockout primitive
       pin-hash.ts    # canonical salted-hash recipe for scorer PINs (shared with event creation)
