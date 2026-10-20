@@ -8,7 +8,7 @@ TeeBoard is a live golf scoring platform for courses, golf pros, and players: re
 
 - **Framework:** Next.js 15 (App Router), React 19, TypeScript (strict), React Server Components
 - **UI:** Tailwind CSS v4, shadcn/ui, lucide-react; Fraunces headings, Inter body text, tabular-nums numeric display; brand green `#0F5132`, gold accent `#C9A227`, cream background `#FAF8F3`; dark palette reserved for the future TV broadcast mode
-- **Database:** Supabase Postgres (us-east-1) with Row Level Security and Realtime (waitlist table live; full schema arrives in Phase 1)
+- **Database:** Supabase Postgres (us-east-1) with Row Level Security and Realtime — full Phase 1 schema in place (see [Data Model](#data-model))
 - **Validation:** Zod schemas shared client/server
 - **Email:** Resend (via the adapter in `src/lib/email/resend-adapter.ts`)
 - **Booking:** Cal.com inline embed (event type configured in the Cal.com dashboard)
@@ -33,7 +33,12 @@ Set the values in `.env.local` (see [Environment Variables](#environment-variabl
 
 ### Supabase migration
 
-Apply the waitlist migration to your Supabase project: open the Supabase dashboard SQL Editor (or use the Supabase CLI against a linked project) and run the SQL in `supabase/migrations/20260101000000_create_waitlist_table.sql`. The migration creates the `waitlist` table plus a Row Level Security policy that permits anonymous inserts only — the anon role can add signups but never read, update, or delete rows. Waitlist signups are written server-side with the service-role key (which bypasses RLS); the insert-only anon policy keeps the table locked down to unauthenticated access.
+Apply the migrations in order to your Supabase project: open the Supabase dashboard SQL Editor (or use the Supabase CLI against a linked project) and run each file in `supabase/migrations/`:
+
+1. `20260101000000_create_waitlist_table.sql` — the Phase 0 `waitlist` table plus an insert-only RLS policy for the anon role (signups in, nothing out).
+2. `20260101000100_create_phase1_schema.sql` — the full Phase 1 schema (see [Data Model](#data-model)).
+
+Row Level Security is enabled on every table. The Phase 1 tables ship with **no policies** — deny-by-default for `anon`/`authenticated` direct table access — so unauthenticated players cannot read or write anything through PostgREST. The only anon write path is the `submit_score` RPC (granted `execute` to `anon`/`authenticated`), a `security definer` function with an empty `search_path` that validates a 32-char crypto-random group token and rate-limits writes to 60 requests/minute per token. Cross-club isolation policies land in M2-T002.
 
 ### Resend wiring
 
@@ -74,6 +79,7 @@ All configuration is environment-driven; nothing is hardcoded in components.
 | Variable | Scope | Description |
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | client + server | Supabase project URL (dashboard → Settings → API) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | client + server | Public anon key for player-facing `submit_score` RPC calls; RLS deny-by-default keeps every table unreachable except via the RPC |
 | `SUPABASE_SERVICE_ROLE_KEY` | server | Service-role key for trusted server operations; bypasses RLS and must never be exposed client-side |
 
 ### Resend
@@ -88,6 +94,73 @@ All configuration is environment-driven; nothing is hardcoded in components.
 | Variable | Scope | Description |
 | --- | --- | --- |
 | `NEXT_PUBLIC_CALCOM_EVENT_LINK` | client + server | Cal.com event-type link for the embedded 15-minute booking widget (full URL or `USERNAME/EVENT-TYPE` path). When unset or unusable, the booking section is hidden instead of rendering a broken embed |
+
+## Data Model
+
+The full schema lives in `supabase/migrations/20260101000100_create_phase1_schema.sql`: **21 domain tables plus 2 server-side security state tables**, all with Row Level Security enabled. Types are Postgres enums (`staff_role`, `tee_gender`, `event_status`, `scoring_format`) with check constraints and foreign keys throughout.
+
+### Tenant & staff
+
+| Table | Purpose |
+| --- | --- |
+| `clubs` | Tenant root: name, slug, logo, primary color, timezone; plan/billing columns (`plan`, `billing_status`, `stripe_customer_id`) exist only as data model — **no billing logic in any request path** (pilots run free) |
+| `profiles` | Staff/admin users mapped 1:1 to `auth.users`; five-role model via `staff_role` enum + `is_superadmin` flag; one owner per club enforced by partial unique index |
+| `staff_invitations` | Data model only (Phase 1): club, email, role, token, expiry, status — invitation **flows** land in Phase 3 |
+| `superadmin_audit_log` | Data model only (Phase 1): actor, action, target, JSONB metadata — impersonation **logic** lands in Phase 3 |
+
+### Course data
+
+| Table | Purpose |
+| --- | --- |
+| `courses` | Per-club course (9 or 18 holes) |
+| `holes` | Per-course hole number, par, stroke index, yards |
+| `tee_sets` | Tee name/color/gender with course rating + slope (WHS inputs) |
+
+### Events & play
+
+| Table | Purpose |
+| --- | --- |
+| `events` | Per-club event with `event_status` (`draft → scheduled → live → completed → archived`) and scorer PIN columns (`scorer_pin_hash`/`scorer_pin_salt`) |
+| `event_formats` | Formats per event (`stroke_play`, `stableford`, `match_play`, …); one primary per event via partial unique index |
+| `players` | Club-level golfer with `handicap_index`, `whs_number` (WHS/USGA scoring inputs) |
+| `groups` | Playing groups per event (foursomes / tee times) |
+| `event_players` | One entry per player per event: `group_token` (32-char crypto-random hex, the only player credential), `tee_set_id`, `course_handicap`, `revoked_at` |
+
+### Scoring
+
+| Table | Purpose |
+| --- | --- |
+| `scores` | Hole-by-hole strokes, unique per `(event_player_id, hole)`; **`client_ts`** (device wall-clock) + `server_ts` for offline conflict resolution — the RPC never lets a stale replay overwrite a newer write |
+| `score_audit` | Append-only audit trail of every score mutation (source: `player_token`/`scorer_pin`/`staff`/`system`) |
+| `side_games`, `side_game_entries` | Optional per-event side games (`skins`, `dots`, `nassau`, `wolf`, `vegas`) and their participants |
+
+### Operations & logs
+
+| Table | Purpose |
+| --- | --- |
+| `ai_parse_log` | Claude Haiku scorecard-parse attempts: input, JSONB output, validated flag, latency |
+| `email_log` | Outbound transactional email (Resend) records |
+| `leagues`, `league_members` | Season leagues and memberships |
+| `waitlist` | Phase 0 landing-page signups (insert-only for anon) |
+
+### Server-side security state
+
+| Table | Purpose |
+| --- | --- |
+| `rate_limit_state` | Fixed-window counters; `submit_score` uses the per-token bucket `submit_score:<token>` at 60 requests/minute |
+| `pin_attempts` | Scorer PIN failure counters + `locked_at` per `(event_id, identifier)`; the 5-strikes/10-minute lockout check lands with the authorization layer in M2-T003 |
+
+### submit_score(token, hole, strokes, client_ts)
+
+The security-definer RPC (`security definer set search_path = ''`) is the **only** write path a group token can reach: execute is revoked from `public` and granted solely to `anon`/`authenticated`/`service_role`, while every table has RLS enabled with no policies so direct table writes raise RLS violations. In order it enforces:
+
+1. **Token shape** — 32-char lowercase hex (`^[0-9a-f]{32}$`), matching the `event_players.group_token` constraint; tokens are crypto-random values, never derived from user input.
+2. **Token → live entry** — the token must resolve to an `event_players` row that is not revoked, on an event that is `scheduled` or `live` (completion or archival blocks further writes).
+3. **Rate limit** — 60 requests/minute per token via an atomic `insert … on conflict` upsert on `rate_limit_state`; the 61st call raises `errcode = 'PT429'`, which PostgREST surfaces as **HTTP 429 Too Many Requests**.
+4. **Bounds** — `strokes` 1–20; `hole` 1–`holes_count` from the event's course (defaults 18).
+5. **Offline conflict resolution** — the upsert is guarded by `client_ts`: a replay with an older `client_ts` than the stored row is recorded in `score_audit` but **never overwrites** the newer score.
+
+Every mutation (accepted or stale-rejected) appends a `score_audit` row, and the RPC returns JSON `{accepted, hole, strokes, stale, event_player_id}`.
 
 ## Running the Project
 
@@ -125,7 +198,8 @@ src/
     utils.ts         # shared helpers (cn)
   middleware.ts      # nonce-based Content-Security-Policy
 supabase/
-  migrations/        # SQL migrations applied to the Supabase project
+  migrations/        # versioned SQL migrations applied to the Supabase project
+                     # (Phase 0 waitlist + Phase 1 full schema incl. submit_score RPC)
 public/              # static assets (logo.svg)
 ```
 
