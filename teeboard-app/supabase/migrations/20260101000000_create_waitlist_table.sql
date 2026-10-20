@@ -16,10 +16,10 @@ create table if not exists public.waitlist (
 create index if not exists waitlist_email_idx on public.waitlist (email);
 create index if not exists waitlist_created_at_idx on public.waitlist (created_at desc);
 
--- Row Level Security: the public landing form inserts with the anon key.
--- Anyone may insert a signup; nobody may read, update, or delete rows
--- through the API (admin access happens via the Supabase dashboard or a
--- server-side service-role session, which bypasses RLS).
+-- Row Level Security: signups are written server-side with the service-role
+-- key (which bypasses RLS). The anon role may insert a signup but never
+-- read, update, or delete rows (admin access happens via the Supabase
+-- dashboard or a server-side service-role session).
 alter table public.waitlist enable row level security;
 
 drop policy if exists "waitlist anon insert only" on public.waitlist;
