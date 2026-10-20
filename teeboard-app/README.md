@@ -1,5 +1,7 @@
 # TeeBoard
 
+## Project Overview
+
 TeeBoard is a live golf scoring platform for courses, golf pros, and players: real-time leaderboards, digital scorecards, and WHS/USGA handicap-aware scoring in a single product. This repository is the monolith — it serves the landing/marketing page, the admin/staff app, and the public player/spectator pages.
 
 ## Tech Stack
