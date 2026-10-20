@@ -31,7 +31,7 @@ Set the values in `.env.local` (see [Environment Variables](#environment-variabl
 
 ### Supabase migration
 
-Apply the waitlist migration to your Supabase project: open the Supabase dashboard SQL Editor (or use the Supabase CLI against a linked project) and run the SQL in `supabase/migrations/20260101000000_create_waitlist_table.sql`. The migration creates the `waitlist` table plus a Row Level Security policy that permits anonymous inserts only — the anon role can add signups but never read, update, or delete rows. Waitlist signups are written server-side with the service-role key (which bypasses RLS); the insert-only anon policy covers unauthenticated direct-client flows and defense in depth.
+Apply the waitlist migration to your Supabase project: open the Supabase dashboard SQL Editor (or use the Supabase CLI against a linked project) and run the SQL in `supabase/migrations/20260101000000_create_waitlist_table.sql`. The migration creates the `waitlist` table plus a Row Level Security policy that permits anonymous inserts only — the anon role can add signups but never read, update, or delete rows. Waitlist signups are written server-side with the service-role key (which bypasses RLS); the insert-only anon policy keeps the table locked down to unauthenticated access.
 
 ### Resend wiring
 
@@ -72,7 +72,6 @@ All configuration is environment-driven; nothing is hardcoded in components.
 | Variable | Scope | Description |
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | client + server | Supabase project URL (dashboard → Settings → API) |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | client + server | Supabase anonymous key; pairs with the insert-only RLS policy |
 | `SUPABASE_SERVICE_ROLE_KEY` | server | Service-role key for trusted server operations; bypasses RLS and must never be exposed client-side |
 
 ### Resend
@@ -96,34 +95,6 @@ npm run build   # production build
 npm run start   # serve the production build
 npm run lint    # ESLint
 ```
-
-## Deployment (Vercel)
-
-The landing page is deployed on Vercel (Pro, iad1 region) with every environment variable from `.env.local` set in the project's Vercel settings:
-
-1. Import the repository into Vercel (framework preset: Next.js; region: iad1).
-2. In the project → Settings → Environment Variables, add every variable listed in [Environment Variables](#environment-variables) for the Production environment.
-3. Deploy; the landing page serves the complete Phase 0 experience at the assigned production URL.
-4. Verify against the deployed URL: a waitlist signup persists a row in Supabase and sends the admin notification, and a Cal.com booking completes end to end through the embed.
-
-Deployment verification checklist (run against the live URL after each deploy):
-
-- The page renders hero, pricing, demo video slot, booking section, and waitlist form.
-- A waitlist signup returns "Thanks — I'll reach out within 24 hours.", inserts a row into the Supabase `waitlist` table, and sends one notification to `ADMIN_NOTIFY_EMAIL`.
-- A booking through the Cal.com embed completes and appears on the owner's calendar.
-- Responses carry the Content-Security-Policy header (see below) without the policy blocking the embed or the Supabase calls.
-
-## Content Security Policy
-
-A nonce-based CSP is applied by `src/middleware.ts` to every non-asset response: Next.js bootstrap scripts run via a per-request nonce with `'strict-dynamic'`, while `app.cal.com` is allowed as a script/frame/image/connect source for the booking embed and `*.supabase.co` is allowed for API/Realtime connections. Resend is called server-side only and needs no browser sources. Baseline hardening headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) are set for all routes in `next.config.ts`.
-
-## Validation Round Usage
-
-The landing page is the tool for the 3-day head-pro outreach. During the round:
-
-- Share the deployed URL with prospects (optionally with `?utm_source=...` — the value is captured and stored with each signup).
-- Every signup lands in the `waitlist` table with email, name, course, state, role, source, and timestamp, and triggers one notification to `ADMIN_NOTIFY_EMAIL` so no lead is missed.
-- Prospects book the 15-min call directly through the embedded Cal.com widget; bookings appear on the owner's calendar with the course name answered from the required question.
 
 ## Project Structure
 
@@ -157,3 +128,31 @@ public/              # static assets (logo.svg)
 ```
 
 Later phases add sibling route groups — `(admin)` for the staff app and `(player)` for public scoring pages — keeping each surface cleanly separated under `src/app/`.
+
+## Deployment (Vercel)
+
+The landing page is deployed on Vercel (Pro, iad1 region) with every environment variable from `.env.local` set in the project's Vercel settings:
+
+1. Import the repository into Vercel (framework preset: Next.js; region: iad1).
+2. In the project → Settings → Environment Variables, add every variable listed in [Environment Variables](#environment-variables) for the Production environment.
+3. Deploy; the landing page serves the complete Phase 0 experience at the assigned production URL.
+4. Verify against the deployed URL: a waitlist signup persists a row in Supabase and sends the admin notification, and a Cal.com booking completes end to end through the embed.
+
+Deployment verification checklist (run against the live URL after each deploy):
+
+- The page renders hero, pricing, demo video slot, booking section, and waitlist form.
+- A waitlist signup returns "Thanks — I'll reach out within 24 hours.", inserts a row into the Supabase `waitlist` table, and sends one notification to `ADMIN_NOTIFY_EMAIL`.
+- A booking through the Cal.com embed completes and appears on the owner's calendar.
+- Responses carry the Content-Security-Policy header (see below) without the policy blocking the embed or the Supabase calls.
+
+## Content Security Policy
+
+A nonce-based CSP is applied by `src/middleware.ts` to every non-asset response: Next.js bootstrap scripts run via a per-request nonce with `'strict-dynamic'`, while `app.cal.com` is allowed as a script/frame/image/connect source for the booking embed and `*.supabase.co` is allowed for API/Realtime connections. Resend is called server-side only and needs no browser sources. Baseline hardening headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) are set for all routes in `next.config.ts`.
+
+## Validation Round Usage
+
+The landing page is the tool for the 3-day head-pro outreach. During the round:
+
+- Share the deployed URL with prospects (optionally with `?utm_source=...` — the value is captured and stored with each signup).
+- Every signup lands in the `waitlist` table with email, name, course, state, role, source, and timestamp, and triggers one notification to `ADMIN_NOTIFY_EMAIL` so no lead is missed.
+- Prospects book the 15-min call directly through the embedded Cal.com widget; bookings appear on the owner's calendar with the course name answered from the required question.
