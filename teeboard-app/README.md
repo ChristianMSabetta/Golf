@@ -10,6 +10,7 @@ TeeBoard is a live golf scoring platform for courses, golf pros, and players: re
 - **UI:** Tailwind CSS v4, shadcn/ui, lucide-react; Fraunces headings, Inter body text, tabular-nums numeric display; brand green `#0F5132`, gold accent `#C9A227`, cream background `#FAF8F3`; dark palette reserved for the future TV broadcast mode
 - **Database:** Supabase Postgres (us-east-1) with Row Level Security and Realtime — full Phase 1 schema in place (see [Data Model](#data-model))
 - **Validation:** Zod schemas shared client/server
+- **Auth:** Supabase Auth (magic link + password) via `@supabase/ssr`; sessions carried through cookies across server components, client components, and middleware
 - **Email:** Resend (via the adapter in `src/lib/email/resend-adapter.ts`)
 - **Booking:** Cal.com inline embed (event type configured in the Cal.com dashboard)
 - **Hosting:** Vercel Pro iad1, co-located with the managed Supabase Postgres in us-east-1
@@ -80,8 +81,8 @@ All configuration is environment-driven; nothing is hardcoded in components.
 | Variable | Scope | Description |
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | client + server | Supabase project URL (dashboard → Settings → API) |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | client + server | Public anon key for player-facing `submit_score` RPC calls; RLS deny-by-default keeps every table unreachable except via the RPC |
-| `SUPABASE_SERVICE_ROLE_KEY` | server | Service-role key for trusted server operations; bypasses RLS and must never be exposed client-side |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | client + server | Public anon key for player-facing `submit_score` RPC calls and Supabase Auth sessions; RLS deny-by-default keeps every table unreachable except via the RPC |
+| `SUPABASE_SERVICE_ROLE_KEY` | server | Service-role key for trusted server operations (first-run club provisioning, profile reads for role checks, `pin_attempts` lockout state); bypasses RLS and must never be exposed client-side |
 
 ### Resend
 
@@ -175,6 +176,28 @@ The security-definer RPC (`security definer set search_path = ''`) is the **only
 
 Every mutation (accepted or stale-rejected) appends a `score_audit` row, and the RPC returns JSON `{accepted, hole, strokes, stale, event_player_id}`.
 
+## Authentication & Authorization
+
+Supabase Auth handles staff/admin sign-in with **both magic link and password** flows (`@supabase/ssr` carries the session through cookies):
+
+- **Server components / route handlers / server actions** — `getRequestSupabase()` (`src/lib/supabase/server.ts`) builds a request-bound client from the request cookies; refreshed cookies persist back into the response.
+- **Client components** — `getBrowserSupabase()` (`src/lib/supabase/client.ts`) carries the session for Supabase Auth calls from the browser.
+- **Middleware** — `updateSession()` (`src/lib/supabase/middleware.ts`) refreshes the session on every request so pages render with a current session on first paint; the nonce-based CSP (unchanged) is applied alongside it in `src/middleware.ts`.
+- **Shared Zod schemas** — `src/lib/auth/schema.ts` validates the sign-in, magic-link, and first-run sign-up payloads identically on client and server (the same module backs both the forms and the server actions).
+
+**First run:** a new owner signing up (`/sign-up`) is provisioned server-side (`src/lib/auth/first-run.ts`) — a club row is created, the owner profile linked to it, and the `owner` role assigned by the server. Client payloads never carry roles; the `superadmin` role and `is_superadmin` flag are never client-writable (RLS enforces it at the database level).
+
+**Five-role model** (`src/lib/auth/authorization.ts`, all checks server-side):
+
+| Role | Credential | Path |
+| --- | --- | --- |
+| owner / head_pro / event_manager | Supabase Auth account | `requireStaffRole(roles)`, `authorizeStaffForClub(clubId, roles)` — the role is read from the `profiles` row, never from the client |
+| super-admin | `profiles.is_superadmin` | `requireSuperadmin()` — the flag is database-only, never a client claim |
+| scorer | event PIN only — **no Supabase Auth user, ever** | `verifyScorerPin()` (`src/lib/scorer/pin.ts`) |
+| player | 32-char group token only — **no account at all** | the `submit_score` RPC (see [Data Model](#data-model)) |
+
+**Scorer PIN lockout** (`verifyScorerPin`): a reusable server-side authorization primitive — no scorer-facing UI ships in this milestone (the `/e/[shortCode]/score` page arrives in Phase 4). It verifies the PIN against the event's salted hash (`sha256(`${salt}:${pin}`)`, constant-time) with state stored server-side in `pin_attempts`: **5 failed attempts lock the `(event_id, identifier)` pair for 10 minutes**; a successful verification resets the counter. Only the service-role client may insert or reset `pin_attempts` rows (staff RLS is read/update, `anon` has no privileges at all), so lockout state can never be forged or cleared from a browser. The `scorer_pin_lockout.test.sql` pgTAP suite proves the state machine and its grants.
+
 ## Running the Project
 
 ```bash
@@ -192,6 +215,7 @@ The pgTAP suites under `supabase/tests/` prove the tenant-isolation guarantees a
 - `rls_grants.test.sql` — structural: RLS enabled on all 23 tables, explicit policies on every one, `anon` holds no privileges beyond the waitlist insert, `service_role` full access, `submit_score` execution granted to exactly `anon`/`authenticated`/`service_role`.
 - `rls_isolation.test.sql` — seeds two complete clubs (A and B) with owners, courses, events, players, groups, scores, side games, leagues, logs, and PIN state, then asserts on **every table** that club A's staff can read/write only club A's rows, that cross-club reads return nothing, that cross-club writes are denied or match zero rows (with the target row proven intact afterward), that the audit trails are append-only, and that superadmin reach is gated on `profiles.is_superadmin`.
 - `submit_score_rpc.test.sql` — token validity (unknown, malformed, non-hex), bounds, revocation and event-completion invalidation, `client_ts` conflict resolution (a stale replay never overwrites a newer score), and the 60 req/min per-token rate limit surfacing as `PT429` (HTTP 429), including per-token budget isolation.
+- `scorer_pin_lockout.test.sql` — the scorer PIN lockout state machine on `pin_attempts`: per-`(event_id, identifier)` rows, upsert-on-conflict semantics, the 5-failure lockout timestamp, success-driven resets, and the grants matrix (staff cannot insert lockout state; `anon` cannot read any).
 
 Run them against your configured Supabase instance:
 
@@ -213,32 +237,47 @@ The runner creates a throwaway scratch database, applies `scripts/rls-bootstrap.
 src/
   app/
     (landing)/       # landing/marketing route group (layout + page)
+    (auth)/          # sign-in + sign-up pages (magic link & password)
+    admin/           # server-protected admin entry (skeleton; M2-T004 builds the shell)
+    auth/callback/   # magic-link code → session exchange (server-side)
     api/waitlist/    # POST route handler validating waitlist signups (Zod)
     layout.tsx       # root layout: fonts (Fraunces/Inter) and metadata
     globals.css      # Tailwind theme: brand design tokens and dark TV palette
   components/
+    auth/            # sign-in + sign-up forms (useActionState server actions)
     landing/         # landing sections: header, hero, demo video slot, pricing,
                      # Cal.com booking section + inline embed, waitlist, footer
     ui/              # shadcn/ui primitives (button, card, input, label, select …)
   lib/
+    auth/
+      schema.ts      # shared client/server Zod schemas (sign-in, magic link, sign-up, scorer PIN)
+      authorization.ts  # server-side five-role model & club-scoped role gates
+      first-run.ts   # first-run club creation + owner profile provisioning (service role)
+      actions.ts     # server actions: password/magic-link sign-in, sign-out, owner sign-up
     brand.ts         # env-var-backed brand config (product name, domain, sender, logo)
     cal-embed/       # Cal.com embed loader and event-link normalization
+    scorer/
+      pin.ts         # server-side scorer PIN verification + 5-strikes/10-min lockout primitive
+      pin-hash.ts    # canonical salted-hash recipe for scorer PINs (shared with event creation)
     us-states.ts     # US state codes/names for the waitlist state selector
     email/
       resend-adapter.ts  # email adapter boundary around the Resend SDK
     supabase/
-      server.ts      # server-only Supabase service-role client factory
+      server.ts      # server-only clients: service-role + request-bound (anon key) + staff auth context
+      middleware.ts  # per-request Supabase session refresh (called from src/middleware.ts)
+      client.ts      # browser client for client components
     waitlist/
       schema.ts      # Zod signup schema + success-message copy (shared client/server)
       server.ts      # Supabase insert + admin notification (exactly one per signup)
     utils.ts         # shared helpers (cn)
-  middleware.ts      # nonce-based Content-Security-Policy
+  middleware.ts      # Supabase session refresh + nonce-based Content-Security-Policy
 supabase/
   migrations/        # versioned SQL migrations applied to the Supabase project
                      # (Phase 0 waitlist, Phase 1 full schema incl. submit_score
                      #  RPC, Phase 1 RLS grants + cross-club isolation policies)
   tests/             # pgTAP suites: RLS grants matrix, cross-club isolation,
-                     # submit_score RPC (run via `supabase test db` or test:rls)
+                     # submit_score RPC, scorer PIN lockout
+                     # (run via `supabase test db` or test:rls)
 scripts/
   rls-bootstrap.sql  # idempotent test bootstrap (roles, auth.uid(), pgtap) —
                      # a no-op on Supabase, a shim for plain Postgres
@@ -246,7 +285,7 @@ scripts/
 public/              # static assets (logo.svg)
 ```
 
-Later phases add sibling route groups — `(admin)` for the staff app and `(player)` for public scoring pages — keeping each surface cleanly separated under `src/app/`.
+Later phases add sibling route groups — `(player)` for the public scoring pages — keeping each surface cleanly separated under `src/app/`. The staff/admin routes live under `admin/` and the `(auth)` group.
 
 ## Deployment (Vercel)
 
@@ -266,7 +305,7 @@ Deployment verification checklist (run against the live URL after each deploy):
 
 ## Content Security Policy
 
-A nonce-based CSP is applied by `src/middleware.ts` to every non-asset response: Next.js bootstrap scripts run via a per-request nonce with `'strict-dynamic'`, while `app.cal.com` is allowed as a script/frame/image/connect source for the booking embed and `*.supabase.co` is allowed for API/Realtime connections. Resend is called server-side only and needs no browser sources. Baseline hardening headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) are set for all routes in `next.config.ts`.
+A nonce-based CSP is applied by `src/middleware.ts` to every non-asset response (alongside the per-request Supabase session refresh): Next.js bootstrap scripts run via a per-request nonce with `'strict-dynamic'`, while `app.cal.com` is allowed as a script/frame/image/connect source for the booking embed and `*.supabase.co` is allowed for API/Realtime connections. Resend is called server-side only and needs no browser sources. Baseline hardening headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) are set for all routes in `next.config.ts`.
 
 ## Validation Round Usage
 
