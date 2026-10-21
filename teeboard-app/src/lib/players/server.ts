@@ -212,3 +212,123 @@ export async function findDuplicateGroups(
   const players = await loadPlayersWithAggregates(clubId);
   return groupDuplicates(players);
 }
+
+// ─── Wizard roster loaders (M4-T005) ─────────────────────────────────────────
+
+export type RosterPlayerRow = {
+  readonly id: string;
+  readonly fullName: string;
+  readonly email: string | null;
+  readonly phone: string | null;
+  readonly gender: "mens" | "womens" | null;
+  readonly handicapIndex: number | null;
+  readonly whsNumber: string | null;
+};
+
+export type RosterAttachmentRow = {
+  readonly playerId: string;
+  readonly fullName: string;
+  readonly email: string | null;
+  readonly phone: string | null;
+  readonly gender: "mens" | "womens" | null;
+  readonly handicapIndex: number | null;
+  readonly whsNumber: string | null;
+  readonly groupToken: string;
+};
+
+function toRosterPlayer(row: PlayerDbRow): RosterPlayerRow {
+  return Object.freeze({
+    id: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    phone: row.phone,
+    gender: normalizeGender(row.gender),
+    handicapIndex: toHandicap(row.handicap_index),
+    whsNumber: row.whs_number,
+  });
+}
+
+/**
+ * The club player list for the wizard's pick-from-database path (M4-T005):
+ * name, email, phone, gender, HI, WHS #. Read through the request-bound
+ * client so RLS applies — another club's players stay invisible.
+ */
+export async function listRosterPlayers(
+  clubId: string,
+): Promise<readonly RosterPlayerRow[]> {
+  const client = await getRequestSupabase();
+  const { data, error } = await client
+    .from("players")
+    .select("id, full_name, email, phone, gender, handicap_index, whs_number")
+    .eq("club_id", clubId)
+    .order("full_name", { ascending: true, nullsFirst: false });
+
+  if (error) {
+    throw new Error(`Failed to list roster players: ${error.message}`);
+  }
+  return (data ?? []).map((row: PlayerDbRow) => toRosterPlayer(row));
+}
+
+/**
+ * The event's current roster (M4-T005): every `event_players` row joined to
+ * its club player, mapped onto the wizard's camelCase shape. Read through
+ * the request-bound client so the events policies scope the join to the
+ * signed-in club's own events.
+ */
+export async function listEventRoster(
+  clubId: string,
+  eventId: string,
+): Promise<readonly RosterAttachmentRow[]> {
+  const client = await getRequestSupabase();
+  const { data, error } = await client
+    .from("event_players")
+    .select(
+      "player_id, group_token, players!inner(id, full_name, email, phone, gender, handicap_index, whs_number), events!inner(club_id)",
+    )
+    .eq("event_id", eventId)
+    .eq("events.club_id", clubId);
+
+  if (error) {
+    throw new Error(`Failed to load the event roster: ${error.message}`);
+  }
+
+  type JoinRow = {
+    player_id: string;
+    group_token: string;
+    players:
+      | {
+          id: string;
+          full_name: string;
+          email: string | null;
+          phone: string | null;
+          gender: string | null;
+          handicap_index: number | string | null;
+          whs_number: string | null;
+        }
+      | {
+          id: string;
+          full_name: string;
+          email: string | null;
+          phone: string | null;
+          gender: string | null;
+          handicap_index: number | string | null;
+          whs_number: string | null;
+        }[]
+      | null;
+    events: { club_id: string } | { club_id: string }[] | null;
+  };
+
+  return (data ?? []).map((row: JoinRow) => {
+    const player = Array.isArray(row.players) ? row.players[0] : row.players;
+    return Object.freeze({
+      playerId: row.player_id,
+      fullName: player?.full_name ?? "",
+      email: player?.email ?? null,
+      phone: player?.phone ?? null,
+      gender: normalizeGender(player?.gender ?? null),
+      handicapIndex: toHandicap(player?.handicap_index ?? null),
+      whsNumber: player?.whs_number ?? null,
+      groupToken: row.group_token,
+    });
+  });
+}

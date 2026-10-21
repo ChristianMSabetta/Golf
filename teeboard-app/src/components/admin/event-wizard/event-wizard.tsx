@@ -8,6 +8,7 @@ import { WizardStepRail } from "./wizard-steps";
 import { AiPrefillCard } from "./ai-prefill-card";
 import { BasicsStep } from "./basics-step";
 import { FormatStep } from "./format-step";
+import { PlayersStep } from "./players-step";
 import {
   completedSteps,
   furthestStep,
@@ -19,25 +20,33 @@ import {
   type WizardStepId,
 } from "@/lib/events/schema";
 import type { CourseSummary } from "@/lib/course/server";
+import type {
+  RosterAttachmentRow,
+  RosterPlayerRow,
+} from "@/lib/players/server";
 import type { AiEventPrefill } from "@/lib/ai/schema";
 
 /**
  * The event creation wizard (M4-T003): the 5-step framework with per-step
  * validation gating, free navigation to any visited/unlocked step, and
  * debounced draft autosave through the server actions. The step registry
- * drives the rail; implemented steps render their form, upcoming ones a
- * preview card — Players (M4-T005), Groups (M4-T006), and Extras &
+ * drives the rail; implemented steps render their form — Basics and Format
+ * (M4-T003), Players (M4-T005) — while Groups (M4-T006) and Extras &
  * publish (M4-T007) land later in this milestone.
  */
 
 export function EventWizard({
   draft,
   courses,
+  clubPlayers,
+  attachedPlayers,
   initialStep,
   canEdit,
 }: {
   draft: WizardDraftData | null;
   courses: readonly CourseSummary[];
+  clubPlayers: readonly RosterPlayerRow[];
+  attachedPlayers: readonly RosterAttachmentRow[];
   initialStep: WizardStepId;
   canEdit: boolean;
 }) {
@@ -189,7 +198,28 @@ export function EventWizard({
         )
       ) : null}
 
-      {step !== "basics" && step !== "format" ? (
+      {step === "players" ? (
+        eventId !== null ? (
+          <PlayersStep
+            eventId={eventId}
+            clubPlayers={clubPlayers}
+            attached={attachedPlayers}
+            readOnly={!canEdit}
+          />
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>Save the basics first</CardTitle>
+              <CardDescription>
+                The players step attaches to a saved draft — finish the
+                basics above and the roster unlocks here.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        )
+      ) : null}
+
+      {step !== "basics" && step !== "format" && step !== "players" ? (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">

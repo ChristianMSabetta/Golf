@@ -314,7 +314,7 @@ export const WIZARD_STEPS = [
     id: "players",
     label: "Players",
     description: "Import the field — CSV, club database, or by hand.",
-    implemented: false,
+    implemented: true,
   },
   {
     id: "groups",
