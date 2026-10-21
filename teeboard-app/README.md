@@ -249,7 +249,12 @@ The runner creates a throwaway scratch database, applies `scripts/rls-bootstrap.
 
 ## The scoring package
 
-All WHS/USGA scoring mathematics lives in the pure TypeScript package at `src/lib/scoring/` — no I/O, no environment reads, no framework, database, or browser APIs; every input (course data, handicap indices, allowances, overrides) is an explicit function parameter. This is the architectural home of all scoring math (rule C13): pages and components consume the package, they never reimplement it. Usage, the exported API, and the WHS verification policy (formula constants, Rules of Handicapping clause citations, and the change procedure) are documented in [`src/lib/scoring/README.md`](src/lib/scoring/README.md).
+All WHS/USGA scoring mathematics lives in the pure TypeScript package at `src/lib/scoring/` — no I/O, no environment reads, no framework, database, or browser APIs; every input (course data, handicap indices, allowances, caps, payout splits, side-game settings) is an explicit function parameter. This is the architectural home of all scoring math (rule C13): pages and components consume the package, they never reimplement it.
+
+- **Handicap layer (M3-T001)** — Course/Playing Handicap computation (Rules of Handicapping 5.1/5.2/5.5/5.6, plus handicaps, Committee overrides) and per-hole stroke allocation.
+- **Competition layer (M3-T002)** — scorecards under maximum-score rules (net double bogey per RoH 3.3b, fixed caps), the five formats (stroke play, scramble, best ball, stableford, shamble) with WHS allowance defaults and configurable team sizes, USGA card-off tiebreaks (last 9/6/3, then hole-by-hole backwards), flights from explicit thresholds, payouts with the 50/30/20 preset and correct tie splitting (ties combine the spanned positions and split the combined amount — redistribution, never duplication), and side games (skins with carryover, closest-to-pin, long drive, longest putt). Calcutta and parimutuel side games are excluded on legal-risk grounds (constraint C24).
+
+Usage, the exported API, and the WHS verification policy (formula constants, Rules of Handicapping clause citations, and the change procedure) are documented in [`src/lib/scoring/README.md`](src/lib/scoring/README.md).
 
 ## Project Structure
 
@@ -291,8 +296,8 @@ src/
       pin-hash.ts    # canonical salted-hash recipe for scorer PINs (shared with event creation)
     scoring/         # @teeboard/scoring — pure WHS/USGA scoring math package (see
                      #  src/lib/scoring/README.md): the single home of all scoring
-                     #  computations; handicap layer (Course/Playing Handicap,
-                     #  stroke allocation) in M3-T001, formats/side games in M3-T002
+                     #  computations — handicap layer + competition layer (formats,
+                     #  max scores, tiebreaks, flights, payouts, side games)
     us-states.ts     # US state codes/names for the waitlist state selector
     email/
       resend-adapter.ts  # email adapter boundary around the Resend SDK

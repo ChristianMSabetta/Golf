@@ -118,3 +118,306 @@ export interface StrokeAllocationResult {
    * value 0 when the hole is part of the round). */
   strokes: StrokesByHole;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Competition layer (M3-T002): scorecards, formats, tiebreaks, flights,
+ * payouts, and side games. Every setting is an explicit input.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** Strokes actually played on a hole, keyed by hole number. Sparse: a
+ * hole missing from the map was not played (picked up / absent). */
+export type HoleScores = Record<number, number>;
+
+/** Handicap strokes received on a hole, keyed by hole number (dense over
+ * the holes of the round; negative = strokes given back by a plus
+ * handicap). */
+export type HoleStrokes = Record<number, number>;
+
+/** One hole of a scorecard: course data plus the player's strokes. */
+export interface ScorecardHole {
+  /** 1-based hole number. */
+  holeNumber: number;
+  /** Par of the hole. */
+  par: number;
+  /** Stroke index of the hole. */
+  strokeIndex: number;
+  /** Strokes played, or `null` when the hole was not played. */
+  strokes: number | null;
+}
+
+/** One hole of a computed scorecard (after capping and netting). */
+export interface ScorecardHoleResult {
+  holeNumber: number;
+  par: number;
+  strokeIndex: number;
+  /** Gross strokes after the maximum-score rule (null = not played). */
+  strokes: number | null;
+  /** Handicap strokes received (negative = given back) on the hole. */
+  strokesReceived: number;
+  /** Net strokes: capped gross − strokes received (null = not played). */
+  netStrokes: number | null;
+  /** Capped gross relative to par (null = not played). */
+  toPar: number | null;
+}
+
+/** Maximum-score rule (Rules of Handicapping 3.3b / Committee policy). */
+export type MaxScoreRule =
+  | { kind: "none" }
+  | { kind: "fixed"; cap: number }
+  | { kind: "double_par" }
+  | { kind: "net_double_bogey" };
+
+/** Which total a format ranks by (and which totals it reports). */
+export type ScoringBasis = "gross" | "net" | "both";
+
+/** One entry of a Stableford point scale. */
+export interface StablefordScaleEntry {
+  /** Net score relative to par (−2 = two under). */
+  toPar: number;
+  /** Points for that score. */
+  points: number;
+}
+
+/** A full Stableford point scale; only the USGA/EGA standard is a code
+ * constant (see `STANDARD_STABLEFORD_SCALE`) — every other scale is
+ * explicit input. */
+export interface StablefordPointScale {
+  /** Fixed entries, ordered best-first (lowest `toPar` first). */
+  entries: StablefordScaleEntry[];
+  /** Additional points per stroke better than the best fixed entry. */
+  pointsPerStrokeBetterThanBest: number;
+  /** Points per stroke worse than the worst fixed entry (negative). */
+  pointsPerStrokeWorseThanWorst: number;
+}
+
+/** One hole of a Stableford scorecard. */
+export interface StablefordHoleResult extends ScorecardHoleResult {
+  /** Stableford points on the hole (null = not played → 0 points). */
+  points: number | null;
+}
+
+/** USGA card-off breakdown for one participant (last 9 / 6 / 3, then
+ * hole-by-hole backwards). */
+export interface CardOffBreakdown {
+  /** Totals on the last N holes, in comparison order. */
+  stages: { lastNHoles: number; total: number }[];
+  /** Per-hole scores from the last hole backwards (null = not played). */
+  backwards: (number | null)[];
+}
+
+/** A flight of a large field. */
+export interface Flight {
+  /** Display name of the flight (e.g. "A Flight"). */
+  name: string;
+  /**
+   * Inclusive maximum handicap index of the flight; `null` marks the
+   * open-top flight that absorbs everyone above the last threshold.
+   */
+  maxHandicap: number | null;
+}
+
+/** A player to place into a flight. */
+export interface FlightPlayer {
+  id: string;
+  /** The handicap measure flight thresholds compare against (Handicap
+   * Index or Course Handicap — an explicit caller decision). */
+  handicap: number;
+  /** Deterministic tie-break key (e.g. `id`) for identical handicaps. */
+  sortId: string;
+}
+
+/** A player's flight assignment. */
+export interface FlightAssignment {
+  playerId: string;
+  flightName: string;
+  /** 0-based flight index in threshold order. */
+  flightIndex: number;
+}
+
+/** One payout position of a purse split. */
+export interface PayoutPosition {
+  /** Fraction of the purse for this position (0.5 = 50%). */
+  share: number;
+}
+
+/** Payout configuration: a purse split across positions. */
+export interface PayoutConfig {
+  /** Total purse in minor-currency units (cents). */
+  purse: number;
+  /** Position splits in payout order (position 1 first). */
+  positions: PayoutPosition[];
+}
+
+/** A payout slot spanned by a tie group. */
+export interface PayoutSlot {
+  /** 1-based payout slot. */
+  slot: number;
+  /** Amount assigned to the slot. */
+  amount: number;
+  /** Share of the purse for the slot (0 beyond the last position). */
+  share: number;
+}
+
+/** One participant's payout. */
+export interface PayoutEntry {
+  id: string;
+  /** Competition position (1-based; ties share a position). */
+  position: number;
+  /** Number of participants tied at the position. */
+  tieCount: number;
+  /** The payout slots the tie group spans. */
+  slots: PayoutSlot[];
+  /** Combined amount of the spanned slots. */
+  combinedAmount: number;
+  /** The participant's equal share of the combined amount. */
+  amount: number;
+}
+
+/** Overall payout computation result. */
+export interface PayoutSummary {
+  purse: number;
+  positions: number;
+  entries: PayoutEntry[];
+}
+
+/** Variant of a skins game. Calcutta and parimutuel are excluded (C24). */
+export type SkinsVariant = "gross" | "net";
+
+/** Configuration of a skins game. */
+export interface SkinsConfig {
+  variant: SkinsVariant;
+  /** Value of one hole in minor-currency units. */
+  holeValue: number;
+  /** Maximum-score rule applied to hole scores. */
+  maxScoreRule: MaxScoreRule;
+}
+
+/** One hole of a skins game. */
+export interface SkinsHoleResult {
+  holeNumber: number;
+  par: number;
+  /** Winning strokes (net or gross per the variant; null = carried over). */
+  winningStrokes: number | null;
+  /** Winner of the hole, `null` when carried over. */
+  winnerId: string | null;
+  /** Value of the pot won on the hole (0 when carried over). */
+  potValue: number;
+  /** Whether the hole carried over. */
+  carriedOver: boolean;
+  /** Amount carried into the next hole's pot. */
+  carryAmount: number;
+}
+
+/** A monetary (or point) value awarded in a side game. */
+export interface SideGameValue {
+  id: string;
+  value: number;
+}
+
+/** A skins game result. */
+export interface SkinsResult {
+  variant: SkinsVariant;
+  holeValue: number;
+  holeResults: SkinsHoleResult[];
+  /** Unawarded value left after the last hole (returned, not scored). */
+  leftovers: number;
+  /** Total value won per participant. */
+  totals: SideGameValue[];
+}
+
+/** A measured entry (distance) for a measured side game. */
+export interface MeasuredSideGameEntry {
+  id: string;
+  /** Distance in yards (closest-to-pin, long drive) or feet (longest
+   * putt); `null` = no measurement. */
+  measurement: number | null;
+}
+
+/** Result of a measured side game (CTP / long drive / longest putt). */
+export interface MeasuredSideGameResult {
+  holeNumber: number;
+  /** Winners (equal measurements share the value). */
+  winnerIds: string[];
+  /** Total value awarded. */
+  value: number;
+}
+
+/** Per-member handicap metadata of a team standings row. */
+export interface TeamMemberStanding {
+  id: string;
+  playingHandicap: number;
+  courseHandicap: number;
+  /** Holes of the player's own card completed so far. */
+  thru: number;
+}
+
+/** A member's handicap contribution to a scramble team. */
+export interface ScrambleMemberHandicap {
+  id: string;
+  /** The member's full Course Handicap. */
+  courseHandicap: number;
+  /** The allowance-reduced portion that counts toward the team. */
+  reducedHandicap: number;
+}
+
+/** Stroke-play standings row. */
+export interface StrokePlayStanding {
+  id: string;
+  position: number;
+  tied: boolean;
+  gross: number;
+  net: number;
+  playingHandicap: number;
+  courseHandicap: number;
+  card: ScorecardHoleResult[];
+  /** Holes completed. */
+  thru: number;
+  cardOff: CardOffBreakdown;
+}
+
+/** Stableford standings row. */
+export interface StablefordStanding {
+  id: string;
+  position: number;
+  tied: boolean;
+  points: number;
+  gross: number;
+  net: number;
+  playingHandicap: number;
+  courseHandicap: number;
+  card: StablefordHoleResult[];
+  thru: number;
+  cardOff: CardOffBreakdown;
+}
+
+/** Scramble standings row. */
+export interface ScrambleStanding {
+  id: string;
+  position: number;
+  tied: boolean;
+  gross: number;
+  net: number;
+  /** Team Playing Handicap: sum of members' reduced handicaps. */
+  playingHandicap: number;
+  members: ScrambleMemberHandicap[];
+  card: ScorecardHoleResult[];
+  thru: number;
+  cardOff: CardOffBreakdown;
+}
+
+/** Best-ball / shamble standings row (team total of counted balls). */
+export interface BestBallStanding {
+  id: string;
+  position: number;
+  tied: boolean;
+  /** Team total: sum of the counted best balls per hole (net or gross
+   * per the configured basis). */
+  total: number;
+  members: TeamMemberStanding[];
+  /** Holes on which at least one member posted a score. */
+  thru: number;
+  cardOff: CardOffBreakdown;
+}
+
+/** Shamble standings row (same shape as best ball). */
+export type ShambleStanding = BestBallStanding;

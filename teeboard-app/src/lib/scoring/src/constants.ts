@@ -61,3 +61,22 @@ export const FOUR_BALL_DEFAULT_ALLOWANCE = 0.85;
  * in 5.5 (no special-case formula). Recorded so the 9-hole path is an
  * explicit, documented decision. */
 export const NINE_HOLE_PLAYING_HANDICAP_RULE = "Appendix E — same as 5.5" as const;
+
+/** Rules of Handicapping 3.3b — a net double bogey is par + 2 + any
+ * handicap strokes received on the hole: the default maximum hole score
+ * for handicap purposes and the common Committee-set Maximum Score. */
+export const NET_DOUBLE_BOGEY_STROKES_OVER_PAR = 2;
+
+/** USGA Recommendations to Committees (matching of cards): ties are
+ * compared on the last 9 holes, then the last 6, then the last 3, then
+ * hole-by-hole from the last hole backwards. */
+export const CARD_OFF_LAST_HOLES_STAGES = [9, 6, 3] as const;
+
+/** TeeBoard product preset for a 3-position purse split (50% / 30% / 20%). */
+export const PAYOUT_PRESET_50_30_20 = [0.5, 0.3, 0.2] as const;
+
+/** Default team-size bounds for the team formats (Rules of Golf 23/22
+ * authorize four-ball and scramble sides of 2–4 players; the Committee
+ * may configure tighter bounds per competition). */
+export const DEFAULT_MIN_TEAM_SIZE = 2;
+export const DEFAULT_MAX_TEAM_SIZE = 4;
