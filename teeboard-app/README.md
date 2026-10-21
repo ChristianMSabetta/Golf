@@ -136,8 +136,8 @@ Super-admin access is gated by `profiles.is_superadmin` (a dedicated policy per 
 | --- | --- |
 | `clubs` | Tenant root: name, slug, logo, primary color, timezone; plan/billing columns (`plan`, `billing_status`, `stripe_customer_id`) exist only as data model — **no billing logic in any request path** (pilots run free). The logo/primary-color/timezone columns are the **single source of club branding** consumed by the admin app today and by leaderboards, PDF scorecards, and transactional email in later phases (resolved through `resolveClubBrand` in `src/lib/brand.ts`) |
 | `profiles` | Staff/admin users mapped 1:1 to `auth.users`; five-role model via `staff_role` enum + `is_superadmin` flag; one owner per club enforced by partial unique index |
-| `staff_invitations` | Data model only (Phase 1): club, email, role, token, expiry, status — invitation **flows** land in Phase 3 |
-| `superadmin_audit_log` | Data model only (Phase 1): actor, action, target, JSONB metadata — impersonation **logic** lands in Phase 3 |
+| `staff_invitations` | Staff invitations (M4-T010): club, email, invitable role, 32-char crypto-random token, 7-day expiry, status (pending/accepted/expired/revoked) — one row per (club, email) |
+| `superadmin_audit_log` | Super-admin audit trail (M4-T010): actor, action, target, JSONB metadata — append-only; every impersonation, trial extension, and Founding assignment is logged |
 
 ### Course data
 
@@ -219,7 +219,7 @@ Supabase Auth handles staff/admin sign-in with **both magic link and password** 
 
 ## Admin App
 
-The authenticated admin app lives under `src/app/admin/` and is **server-side protected end to end**: the admin layout (`src/app/admin/layout.tsx`) authenticates every admin request through `requireStaff()` before any content renders — an unauthenticated or insufficient-role visitor is redirected to `/sign-in` before the page streams. The shell renders the section navigation (Dashboard, Courses, Events, Players, Club settings) plus the top bar with the club identity and sign-out.
+The authenticated admin app lives under `src/app/admin/` and is **server-side protected end to end**: the admin layout (`src/app/admin/layout.tsx`) authenticates every admin request through `requireStaff()` before any content renders — an unauthenticated or insufficient-role visitor is redirected to `/sign-in` before the page streams. The shell renders the section navigation (Dashboard, Courses, Events, Players, Club settings — plus Super admin for `is_superadmin` profiles) and the top bar with the club identity and sign-out; while a superadmin impersonates club staff, a gold banner names the target on every page.
 
 - **Dashboard (`/admin`)** — post-sign-in landing for owners and staff: the signed-in identity and role plus the club summary (name, timezone, contact) read server-side from the database.
 - **Club settings (`/admin/settings`)** — club profile editing (name, logo URL, primary color, timezone) validated by the shared Zod schema (`src/lib/club/schema.ts`) on both client and server. Saves run through the `updateClubProfile` server action, which re-authorizes server-side (owners and head pros only) and persists via the service-role client because `clubs` is read-only under RLS — the tenant root is only ever written by trusted server code. Success revalidates the admin layout so the new branding renders immediately.
@@ -235,7 +235,18 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
   - **CSV import/export** — `importPlayers` parses pasted or uploaded CSV (headers auto-detected; renamed columns like "Golfer Name", "HI", "WHS #" map automatically; headerless positional files fall back to name/email/phone/gender/HI/WHS), validates every row with the shared Zod schema, and upserts keyed on (name, email) so re-importing updates instead of duplicating; per-row errors are flagged by source line number. `exportPlayers` serializes the same canonical columns. Round-trip is covered by tests.
   - **Duplicate detection & merge** — players sharing the same name AND email are grouped (`src/lib/players/duplicates.ts`, pure) and surfaced in a panel plus row flags. One click merges via the `mergePlayers` server action: blank keeper fields are backfilled from the source, `event_players` rows are re-pointed at the keeper (or dropped where the keeper already holds a slot — `event_players` is unique per event+player), and the source row is deleted — event history and score references survive through the re-pointed entries. All writes are service-role with the club filter enforced in every `.eq("club_id", …)`.
 
-**Club branding** flows from one place: `resolveClubBrand` (`src/lib/brand.ts`) resolves a club's stored settings into a typed `ClubBrand` (name, logo URL, normalized `#RRGGBB` primary color, IANA timezone), falling back to the env-var-backed product defaults for anything unset. No component hardcodes a club name, color, or logo. Staff management (invitations, plan limits) and super-admin surfaces arrive in Phase 3.
+**Club branding** flows from one place: `resolveClubBrand` (`src/lib/brand.ts`) resolves a club's stored settings into a typed `ClubBrand` (name, logo URL, normalized `#RRGGBB` primary color, IANA timezone), falling back to the env-var-backed product defaults for anything unset. No component hardcodes a club name, color, or logo.
+
+- **Staff management (`/admin/settings`, M4-T010)** — invitations with roles, on top of the profile form:
+  - **Invitations** — the owner/head pro invites staff by email with a role (`head_pro` or `event_manager`; `owner` and the `superadmin` flag are never invitable — one owner per club is enforced by the partial unique index). Each invitation carries a fresh 32-char crypto-random token (`newGroupToken`'s generator, backed by `node:crypto`) and expires after exactly **7 days** — the expiry is re-checked **server-side** at accept time (`src/lib/staff/server.ts`), never trusted from the link. Re-inviting the same email upserts in place (`(club_id, email)` unique) with a fresh token and a fresh window.
+  - **Club plan limit** — exactly 3 staff seats (owner included) on the Club plan, enforced in the `inviteStaffMember` server action **before** any write: linked staff + usable pending invitations count against the cap, so a tampered form can never add a 4th member. A Founding club (stored as `plan = 'pro'`, see below) has no seat limit. The pure decision logic (`checkSeatAvailability`) is unit-tested in `src/lib/staff/schema.test.ts`.
+  - **Revocation** — `revokeStaffInvitation` flips a pending invitation to `revoked` (idempotent); a revoked link is dead on its next accept attempt.
+  - **Accept** — `/staff/accept?club=…&token=…` links the signed-in invitee's profile to the club with the invitation's role, bouncing through `/sign-in?next=…` when not signed in (the sign-in actions accept a same-origin absolute `next` path only — no open redirect). Accept is idempotent, and an email mismatch is refused.
+- **Super admin (`/admin/superadmin`, M4-T010)** — gated on `profiles.is_superadmin` server-side (never a client claim); regular staff are redirected and every server action re-checks the flag:
+  - **All clubs** — every club with its plan, billing status, and staff list.
+  - **Impersonation** — one click switches the superadmin's session to a club's staff member (the impersonation cookie stores only actor + target profile ids, re-validated against the database on every request; a forged or stale cookie resolves nothing). The audit row is written **before** the cookie is set, so no impersonated request can ever run un-logged, and the banner shows the target identity on every admin page with the stop control. Stopping re-validates the actor from the cookie (not from `getStaff`, which resolves to the target mid-session) and audits the end.
+  - **Trial extension & Founding plan** — `extendTrial` re-arms the pilot window (days recorded in the audit metadata) and `grantFoundingPlan` assigns Founding. The Phase 1 `clubs.plan` check constraint admits only `free | pilot | pro`, and the schema is frozen for this milestone — so Founding is stored as `plan = 'pro'` + `billing_status = 'active'`, which also lifts the staff seat limit; the audit row (`assign_founding_plan`) records the Founding intent.
+  - **Audit log** — `superadmin_audit_log` is append-only (no update/delete path for anyone); every impersonation start/end, trial extension, and Founding assignment writes a row with actor, action, target, and JSONB metadata. The pgTAP suite proves regular staff can neither read nor forge rows.
 
 - **Event wizard (`/admin/events`, `/admin/events/new`) — M4-T003** — the 5-step event creation framework:
   - **Step registry & gating** — the wizard's five steps (Basics, Format, Players, Groups & teams, Extras & publish — all implemented through M4-T007) are declared in one registry (`src/lib/events/schema.ts`); navigation is free to any unlocked or previously visited step, and each step unlocks only once its predecessors validate (Extras additionally requires at least one saved group, because publishing mints a token per group). Validation is the shared Zod contract running identically client- and server-side, so progression blocks on exactly what the autosave action enforces.
@@ -293,6 +304,7 @@ The pgTAP suites under `supabase/tests/` prove the tenant-isolation guarantees a
 
 - `rls_grants.test.sql` — structural: RLS enabled on all 23 tables, explicit policies on every one, `anon` holds no privileges beyond the waitlist insert, `service_role` full access, `submit_score` execution granted to exactly `anon`/`authenticated`/`service_role`.
 - `rls_isolation.test.sql` — seeds two complete clubs (A and B) with owners, courses, events, players, groups, scores, side games, leagues, logs, and PIN state, then asserts on **every table** that club A's staff can read/write only club A's rows, that cross-club reads return nothing, that cross-club writes are denied or match zero rows (with the target row proven intact afterward), that the audit trails are append-only, and that superadmin reach is gated on `profiles.is_superadmin`.
+- `club_settings_rls.test.sql` — the M4-T010 club-settings surfaces: invitations are tenant-isolated (club A staff never read or revoke club B rows), a club's branding (logo/color/timezone) is readable by its staff, `clubs` stays read-only for staff (the tenant root is written only by trusted server code), the superadmin reads all clubs and invitations, and `superadmin_audit_log` is append-only behind the `is_superadmin` gate — regular staff can neither read nor forge audit rows, and no one can rewrite the trail.
 - `submit_score_rpc.test.sql` — token validity (unknown, malformed, non-hex), bounds, revocation and event-completion invalidation, `client_ts` conflict resolution (a stale replay never overwrites a newer score), and the 60 req/min per-token rate limit surfacing as `PT429` (HTTP 429), including per-token budget isolation.
 - `scorer_pin_lockout.test.sql` — the scorer PIN lockout state machine on `pin_attempts`: per-`(event_id, identifier)` rows, upsert-on-conflict semantics, the 5-failure lockout timestamp, success-driven resets, and the grants matrix (staff cannot insert lockout state; `anon` cannot read any).
 - `ai_parse_log_club.test.sql` — the M4-T004 club attribution on `ai_parse_log`: the nullable `club_id` column and its `(club_id, created_at desc)` rate-limit index, legacy null-attributed rows staying valid, and staff reading only their own club's rows through the Phase 1 policy set.
@@ -376,7 +388,13 @@ src/
                      #  w/ typed-CHANGE format-edit safeguard + quick actions
       players/       # club player database (M4-T002): searchable table with
                      # inline handicap edits, CSV import/export, duplicate merge
-      settings/      # club profile settings page (server component + form)
+      settings/      # club settings (M4-T010): profile form + staff management
+                     #  (invitations w/ roles + seat limit + revoke)
+      superadmin/    # super-admin surface (M4-T010): all clubs, impersonation,
+                     #  trial extension, Founding-plan assignment (is_superadmin
+                     #  gated server-side)
+    staff/accept/    # staff invitation accept route (server-side expiry
+                     #  re-check, idempotent, sign-in bounce-back)
     auth/callback/   # magic-link code → session exchange (server-side)
     api/waitlist/    # POST route handler validating waitlist signups (Zod)
     api/health/      # readiness probe (Supabase round-trip; 503 when down)
@@ -404,6 +422,10 @@ src/
                      #  Archive, draft-only Delete enforced server-side)
                      # players/ — table w/ search+sort+inline HI edit, CSV panel,
                      #  duplicate merge panel (M4-T002)
+                     # staff/ — staff manager card (M4-T010): staff list +
+                     #  invitations w/ status badges + revoke + invite form
+                     # superadmin/ — per-club actions (impersonate w/ audit,
+                     #  extend trial, assign Founding) + impersonation banner
     auth/            # sign-in + sign-up forms (useActionState server actions)
     landing/         # landing sections: header, hero, demo video slot, pricing,
                      # Cal.com booking section + inline embed, waitlist, footer
@@ -422,6 +444,24 @@ src/
       schema.ts      # shared client/server Zod schema for club profile settings
       server.ts      # club row loader via the request client (RLS-scoped reads)
       actions.ts     # updateClubProfile server action (role-gated, service-role write)
+    staff/
+      schema.ts      # pure staff-management contract (M4-T010): invitation
+                     #  schema (email + invitable role), 7-day expiry + status
+                     #  arithmetic, Club-plan seat-limit decision, accept-path
+                     #  builder (+ schema.test.ts suite)
+      server.ts      # staff_invitations data access: club-scoped reads, seat
+                     #  counts, crypto-random-token invite upsert, revoke,
+                     #  server-side expiry re-check + idempotent accept
+      actions.ts     # inviteStaffMember (role-gated, seat-limited, Resend email)
+                     #  + revokeStaffInvitation server actions
+    superadmin/
+      server.ts      # super-admin data access (M4-T010): all-clubs view,
+                     #  audit-log appender, impersonation cookie session
+                     #  (start/stop/resolve, DB-revalidated), trial extension,
+                     #  Founding-plan assignment (stored as plan=pro+active)
+      actions.ts     # impersonateStaffMember / stopImpersonating / extendTrial /
+                     #  grantFoundingPlan server actions (every one re-checks
+                     #  is_superadmin server-side and audit-logs)
     course/
       schema.ts      # shared client/server Zod schemas: scorecard grid (par/SI/
                      #  yards, unique-permutation stroke indexes, 9/18 par totals),

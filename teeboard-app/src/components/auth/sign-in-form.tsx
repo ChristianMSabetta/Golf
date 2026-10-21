@@ -14,7 +14,7 @@ import { MAGIC_LINK_SENT_MESSAGE } from "@/lib/auth/schema";
 
 const EMPTY_FORM = { email: "", password: "" };
 
-export function SignInForm() {
+export function SignInForm({ next }: { next?: string }) {
   const [mode, setMode] = useState<"password" | "magic">("password");
   const [form, setForm] = useState(EMPTY_FORM);
 
@@ -80,6 +80,7 @@ export function SignInForm() {
         noValidate
         className="flex flex-col gap-4"
       >
+        {next ? <input type="hidden" name="next" value={next} /> : null}
         <div className="flex flex-col gap-2">
           <Label htmlFor="sign-in-email">Email address</Label>
           <Input

@@ -18,6 +18,9 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
   const params = await searchParams;
   const hasReason = Boolean(firstParam(params.reason));
   const forbidden = Boolean(firstParam(params.forbidden));
+  const next = firstParam(params.next);
+  const safeNext =
+    next && next.startsWith("/") && !next.startsWith("//") ? next : undefined;
 
   return (
     <main className="w-full max-w-md">
@@ -31,7 +34,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
             ? "Please sign in to continue."
             : "Sign in with a magic link or your password."}
       </p>
-      <SignInForm />
+      <SignInForm next={safeNext} />
     </main>
   );
 }
