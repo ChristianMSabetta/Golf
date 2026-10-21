@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getRequestSupabase } from "@/lib/supabase/server";
 import { provisionFirstRun } from "@/lib/auth/first-run";
+import { brand } from "@/lib/brand";
 import {
   magicLinkSignInSchema,
   ownerSignUpSchema,
@@ -18,6 +19,17 @@ export type AuthActionState = {
 
 const GENERIC_ERROR = "Something went wrong. Please try again in a moment.";
 const VALIDATION_ERROR = "Please fix the highlighted fields.";
+
+/** Only same-origin absolute paths may be a post-sign-in bounce-back. */
+function safeNextPath(formData: FormData): string {
+  const raw = String(formData.get("next") ?? "");
+  return raw.startsWith("/") && !raw.startsWith("//") ? raw : "";
+}
+
+/** The site origin for email redirect URLs, from the env-var-backed domain. */
+function originFromEnv(): string {
+  return `https://${brand.domain}`;
+}
 
 type ZodIssue = {
   path: (string | number | symbol)[];
@@ -70,12 +82,14 @@ export async function signInWithPassword(
   }
 
   revalidatePath("/", "layout");
-  redirect("/admin");
+  redirect(safeNextPath(formData) || "/admin");
 }
 
 /**
  * Magic-link sign-in: Supabase emails a one-time link; the session is
- * established in /auth/callback when the user follows it.
+ * established in /auth/callback when the user follows it. The `next` path
+ * (same-origin absolute paths only) rides along so the bounce-back lands
+ * where the user started — e.g. a staff invitation accept link.
  */
 export async function requestMagicLink(
   _prev: AuthActionState,
@@ -89,9 +103,13 @@ export async function requestMagicLink(
     return { error: VALIDATION_ERROR, fields: fieldErrors(parsed.error.issues) };
   }
 
+  const nextPath = safeNextPath(formData);
   const client = await getRequestSupabase();
   const { error } = await client.auth.signInWithOtp({
     email: parsed.data.email,
+    options: nextPath
+      ? { emailRedirectTo: `${originFromEnv()}${nextPath}` }
+      : undefined,
   });
 
   if (error) {

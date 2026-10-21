@@ -119,15 +119,29 @@ export type StaffAuthContext = {
  * provisioning (first-run club creation) races with the anon-role policy
  * check for brand-new users; role and club assignment come from the
  * database row, never from a client-supplied claim.
+ *
+ * When a superadmin is impersonating club staff (M4-T010), the profile
+ * resolves to the TARGET staff member's row instead — the impersonation
+ * cookie is validated here server-side (the actor must still be a
+ * superadmin), so every downstream authorization decision runs exactly as
+ * if the target were signed in.
  */
 export async function getStaffAuthContext(): Promise<StaffAuthContext> {
   const { user } = await getAuthContext();
   if (!user) return { user: null, profile: null };
 
   const serverClient = getServerSupabase();
+  const profileColumns =
+    "id, user_id, club_id, full_name, email, role, is_superadmin";
+
+  const impersonated = await resolveImpersonatedProfile(serverClient);
+  if (impersonated) {
+    return { user, profile: impersonated };
+  }
+
   const { data: profile, error } = await serverClient
     .from("profiles")
-    .select("id, user_id, club_id, full_name, email, role, is_superadmin")
+    .select(profileColumns)
     .eq("user_id", user.id)
     .maybeSingle<ProfileRow>();
 
@@ -136,4 +150,32 @@ export async function getStaffAuthContext(): Promise<StaffAuthContext> {
   }
 
   return { user, profile: profile ?? null };
+}
+
+/**
+ * Resolves the impersonation target's profile row when the request carries
+ * a valid impersonation cookie: the actor profile must still exist and
+ * still be flagged `is_superadmin`, and the target profile must exist. A
+ * forged or stale cookie resolves nothing (the caller falls back to the
+ * signed-in user's own profile).
+ */
+async function resolveImpersonatedProfile(
+  client: SupabaseClient,
+): Promise<ProfileRow | null> {
+  // Dynamic import: superadmin/server (transitively) imports this module's
+  // getStaffAuthContext through auth/authorization; a static import would
+  // create a require cycle. The dynamic boundary resolves it at call time.
+  const { getActiveImpersonation } = await import("@/lib/superadmin/server");
+
+  const session = await getActiveImpersonation();
+  if (!session) return null;
+
+  const { data: target, error } = await client
+    .from("profiles")
+    .select("id, user_id, club_id, full_name, email, role, is_superadmin")
+    .eq("id", session.targetProfileId)
+    .maybeSingle<ProfileRow>();
+
+  if (error || !target) return null;
+  return target;
 }
