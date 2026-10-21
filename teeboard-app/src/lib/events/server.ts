@@ -7,6 +7,16 @@ import {
   type EventWizardRow,
   type WizardDraftData,
 } from "./wizard";
+import {
+  SPONSOR_BUCKET,
+  sideGamesFromRows,
+  sponsorsFromRows,
+  flightsFromRows,
+  payoutStepFromStored,
+  type EventFlightRow,
+  type EventSponsorRow,
+  type SideGameRow,
+} from "./extras";
 
 /**
  * RLS-respecting event data access (M4-T003). Reads go through the
@@ -105,6 +115,129 @@ export const getWizardDraft = cache(
       null;
 
     return toWizardDraft(event, primary);
+  },
+);
+
+// ─── Extras & publish step loads (M4-T007) ──────────────────────────────────
+
+/**
+ * The extras state the wizard renders: flights, side games, sponsors, the
+ * welcome message, and visibility, all read through the request-bound
+ * client so the Phase 1 policies scope them to the signed-in club.
+ */
+export type EventExtras = {
+  readonly flights: readonly {
+    readonly name: string;
+    readonly maxHandicap: number | null;
+  }[];
+  readonly sideGames: readonly {
+    readonly kind: "skins" | "closest_to_pin" | "long_drive" | "longest_putt";
+    readonly holeValue: number | null;
+    readonly holeValueText: string;
+  }[];
+  readonly sponsors: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly logoPath: string;
+    readonly logoUrl: string | null;
+  }[];
+  readonly payouts: {
+    readonly presetId: string;
+    readonly purse: number;
+  };
+  readonly welcomeMessage: string;
+  readonly isPublic: boolean;
+};
+
+/**
+ * The public CDN URL of a stored sponsor logo (the bucket is public-read).
+ * Null only when Supabase is not configured — the renderer shows a
+ * placeholder rather than a broken image.
+ */
+export function sponsorLogoUrl(logoPath: string): string | null {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base) return null;
+  return `${base}/storage/v1/object/public/${SPONSOR_BUCKET}/${logoPath}`;
+}
+
+type EventExtrasRow = {
+  welcome_message: string | null;
+  is_public: boolean;
+  payout_preset_id: string | null;
+  payout_purse: number | string | null;
+};
+
+/**
+ * Loads one draft event's extras state (M4-T007): flights, the four side
+ * games the step manages, sponsor rows with their public URLs, and the
+ * welcome message + visibility columns. Draft events only — a published
+ * event belongs to its admin page.
+ */
+export const getEventExtras = cache(
+  async (
+    clubId: string,
+    eventId: string,
+  ): Promise<EventExtras | null> => {
+    const client = await getRequestSupabase();
+
+    const { data: event, error: eventError } = await client
+      .from("events")
+      .select("welcome_message, is_public, status, club_id, payout_preset_id, payout_purse")
+      .eq("id", eventId)
+      .maybeSingle<
+        EventExtrasRow & {
+          status: EventDbRow["status"];
+          club_id: string;
+        }
+      >();
+
+    if (eventError) {
+      throw new Error(`Failed to load event extras: ${eventError.message}`);
+    }
+    // RLS scopes the read; the club filter is defense in depth for the
+    // service-role path and a correctness guard for the request path.
+    if (!event || event.club_id !== clubId) return null;
+    if (event.status !== "draft") return null;
+
+    const [flights, sideGames, sponsors] = await Promise.all([
+      client
+        .from("event_flights")
+        .select("id, name, max_handicap, position")
+        .eq("event_id", eventId)
+        .order("position", { ascending: true })
+        .returns<EventFlightRow[]>(),
+      client
+        .from("side_games")
+        .select("id, game_type, name, hole_value")
+        .eq("event_id", eventId)
+        .returns<SideGameRow[]>(),
+      client
+        .from("event_sponsors")
+        .select("id, name, logo_path, position")
+        .eq("event_id", eventId)
+        .order("position", { ascending: true })
+        .returns<EventSponsorRow[]>(),
+    ]);
+
+    return Object.freeze({
+      flights: flightsFromRows(flights.data ?? []),
+      sideGames: sideGamesFromRows(sideGames.data ?? []),
+      sponsors: sponsorsFromRows(sponsors.data ?? []).map((sponsor, index) => {
+        const row = (sponsors.data ?? [])[index];
+        return {
+          id: row?.id ?? "",
+          name: sponsor.name,
+          logoPath: sponsor.logoPath,
+          logoUrl: sponsorLogoUrl(sponsor.logoPath),
+        };
+      }),
+      payouts: payoutStepFromStored(
+        event.payout_preset_id,
+        event.payout_purse === null ? null : Number(event.payout_purse),
+      ),
+      welcomeMessage: event.welcome_message ?? "",
+      isPublic: event.is_public,
+    });
   },
 );
 
