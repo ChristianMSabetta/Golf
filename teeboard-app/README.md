@@ -217,9 +217,11 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
 
 ```bash
 npm run dev        # development server at http://localhost:3000
-npm run build      # production build
+npm run build      # production build (runs the no-scoring-math guard first)
 npm run start      # serve the production build
-npm run lint       # ESLint
+npm run lint       # no-scoring-math guard + ESLint
+npm run guard:scoring-boundary        # the no-scoring-math guard alone
+npm run guard:scoring-boundary:prove # demonstrate the guard fails on an intentional violation
 npm run test:rls   # pgTAP RLS/isolation suites (see Testing the database)
 npm run test:scoring          # lib/scoring Vitest verification suite (see The scoring package)
 npm run test:scoring:coverage # the suite + v8 coverage, ≥95% lines/branches enforced
@@ -258,6 +260,38 @@ All WHS/USGA scoring mathematics lives in the pure TypeScript package at `src/li
 
 Usage, the exported API, and the WHS verification policy (formula constants, Rules of Handicapping clause citations, and the change procedure) are documented in [`src/lib/scoring/README.md`](src/lib/scoring/README.md).
 
+## The integration proof page (M3-T004)
+
+The Phase 2 proof that the whole pipeline runs end to end lives at **`/proof/leaderboard`**:
+
+```bash
+npm run dev        # then open http://localhost:3000/proof/leaderboard
+# or
+npm run build && npm run start   # production build, then the same URL
+```
+
+- The page renders the **committed static fixture** of a seeded event — [`src/lib/leaderboard/fixture.ts`](src/lib/leaderboard/fixture.ts): a full championship course (pars, stroke indices, CR/SR per tee), a nine-player field spanning scratch to 20.8 (including a plus handicap), shotgun-start groups, and a complete 18-hole score set per player.
+- Gross and net standings are **computed client-side through `@/lib/scoring` only** — the component code never does scoring arithmetic itself; the position-change movement arrows come from the package's movement module (`computePositionMovements`), so even the standings arithmetic lives inside the package.
+- **Position movement is visibly proven by simulation:** press "Apply simulated score update" and the same seed data is updated in memory (Devon Clarke's closing hole 18 goes 5 → 3), every total is recomputed through the package, and the movement arrows render the position changes (gross: Clarke ↑1 / Raghavan ↓1 into a tie; net: Clarke ↑1 / Kowalczyk ↓1). Press again to reset to the seeded standings — the arrows recompute both ways.
+- **Deliberately free of Phase 4 machinery** — no Realtime subscription, no polling, no Supabase client, no database read. The fixture file is the page's only data source, so the milestone boundary stays intact.
+
+## The no-scoring-math guard
+
+The rule "scoring math lives only in `src/lib/scoring`" (C13) is enforced **mechanically**, not by review convention. `scripts/guard-scoring-boundary.mjs` parses every page and component file (`src/app/**`, `src/components/**`) with the TypeScript AST and fails when it finds:
+
+1. **Arithmetic on scoring-domain values** — `+ - * / % ** += -= *= /= %=`, unary sign (`-score`), or `++`/`--` (prefix and postfix) applied to any score, stroke, handicap, par, points, standings, position, payout, or flight identifier (e.g. `net - par`, `totalGross += 1`, `row.score++`).
+2. **Deep imports bypassing the package entry** — `@/lib/scoring/src/handicap` or any other specifier that reaches past `@/lib/scoring` into the package internals.
+
+The guard runs in **`npm run lint` and `npm run build`** — so the same single command that builds the project in CI also enforces the boundary, and no scoring arithmetic can reach production. To run just the guard: `npm run guard:scoring-boundary`.
+
+**The guard is proven, not assumed** (a guard that never fails is worse than no guard):
+
+```bash
+npm run guard:scoring-boundary:prove
+```
+
+plants an intentional violation (a component computing `net - par`), asserts the guard **exits non-zero**, removes it, and asserts the guard passes on the clean tree — verifying both the failure and the recovery. `src/lib/scoring/` itself, `src/lib/leaderboard/fixture.ts` (seed data), and all test files are outside the guarded scope, so the package can compute freely.
+
 ## Project Structure
 
 ```
@@ -265,6 +299,9 @@ src/
   app/
     (landing)/       # landing/marketing route group (layout + page)
     (auth)/          # sign-in + sign-up pages (magic link & password)
+    proof/leaderboard/  # Phase 2 integration proof page (seeded fixture,
+                     #  computed client-side through lib/scoring — see
+                     #  "The integration proof page")
     admin/
       layout.tsx     # server-authenticated admin shell (nav + top bar)
       page.tsx       # post-sign-in dashboard (club summary, get-started)
@@ -280,6 +317,8 @@ src/
     auth/            # sign-in + sign-up forms (useActionState server actions)
     landing/         # landing sections: header, hero, demo video slot, pricing,
                      # Cal.com booking section + inline embed, waitlist, footer
+    proof/           # Phase 2 proof components: leaderboard standings table,
+                     # header (branding from lib/brand only — no hardcoded names)
     ui/              # shadcn/ui primitives (button, card, input, label, select …)
   lib/
     auth/
@@ -299,7 +338,11 @@ src/
     scoring/         # @teeboard/scoring — pure WHS/USGA scoring math package (see
                      #  src/lib/scoring/README.md): the single home of all scoring
                      #  computations — handicap layer + competition layer (formats,
-                     #  max scores, tiebreaks, flights, payouts, side games)
+                     #  max scores, tiebreaks, flights, payouts, side games) +
+                     #  standings movement
+    leaderboard/
+      fixture.ts     # committed static fixture of the seeded event (course, field,
+                     #  groups, complete scores) — the proof page's only data source
     us-states.ts     # US state codes/names for the waitlist state selector
     email/
       resend-adapter.ts  # email adapter boundary around the Resend SDK
@@ -323,6 +366,9 @@ scripts/
   rls-bootstrap.sql  # idempotent test bootstrap (roles, auth.uid(), pgtap) —
                      # a no-op on Supabase, a shim for plain Postgres
   run-rls-tests.mjs  # scratch-database runner for supabase/tests (test:rls)
+  guard-scoring-boundary.mjs  # no-scoring-math AST guard (lint + build; see
+                     # "The no-scoring-math guard")
+  verify-scoring-guard.mjs    # guard-effectiveness proof (guard:scoring-boundary:prove)
 public/              # static assets (logo.svg)
 ```
 

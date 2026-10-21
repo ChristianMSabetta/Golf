@@ -60,6 +60,12 @@ export {
   compareCardOff,
   lastNHolesTotal,
 } from "./tiebreak";
+export {
+  computePositionMovements,
+  standingPositions,
+  strokePlayMovements,
+} from "./movement";
+export type { StandingMovement, StandingPosition } from "./movement";
 export { assignFlights } from "./flights";
 export {
   computePayouts,
