@@ -241,6 +241,216 @@ export const getEventExtras = cache(
   },
 );
 
+// ─── Event admin page loads (M4-T008) ───────────────────────────────────────
+
+/** The event admin page's view of one event: any status, full shape. */
+export type EventAdminEvent = {
+  readonly id: string;
+  readonly clubId: string;
+  readonly name: string;
+  readonly startDate: string;
+  readonly status: "draft" | "scheduled" | "live" | "completed" | "archived";
+  readonly courseId: string;
+  readonly courseName: string;
+  readonly holesCount: number;
+  readonly nineOption: "front" | "back";
+  readonly rounds: number;
+  readonly startType: "tee_times" | "shotgun";
+  readonly shortCode: string | null;
+  readonly welcomeMessage: string;
+  readonly isPublic: boolean;
+  readonly publishedAt: string | null;
+};
+
+type EventAdminDbRow = {
+  id: string;
+  club_id: string;
+  name: string;
+  start_date: string;
+  status: "draft" | "scheduled" | "live" | "completed" | "archived";
+  course_id: string;
+  holes_count: number;
+  nine_option: string;
+  rounds: number;
+  start_type: string;
+  short_code: string | null;
+  welcome_message: string | null;
+  is_public: boolean;
+  published_at: string | null;
+};
+
+/**
+ * Loads one event for its admin page (M4-T008) — any status (the wizard
+ * loads drafts only; this is the post-publish management surface). The read
+ * goes through the request-bound client so the Phase 1 events policies scope
+ * it to the signed-in club, and the `courses` join carries the course name
+ * for the header. The club filter is defense in depth for the request path.
+ */
+export const getEventAdminEvent = cache(
+  async (
+    clubId: string,
+    eventId: string,
+  ): Promise<EventAdminEvent | null> => {
+    const client = await getRequestSupabase();
+    const { data, error } = await client
+      .from("events")
+      .select(
+        "id, club_id, name, start_date, status, course_id, holes_count, nine_option, rounds, start_type, short_code, welcome_message, is_public, published_at, courses!inner(name)",
+      )
+      .eq("id", eventId)
+      .eq("club_id", clubId)
+      .maybeSingle<
+        EventAdminDbRow & {
+          courses: { name: string } | { name: string }[] | null;
+        }
+      >();
+
+    if (error) {
+      throw new Error(`Failed to load event: ${error.message}`);
+    }
+    if (!data) return null;
+
+    const course = Array.isArray(data.courses) ? data.courses[0] : data.courses;
+
+    return Object.freeze({
+      id: data.id,
+      clubId: data.club_id,
+      name: data.name,
+      startDate: data.start_date,
+      status: data.status,
+      courseId: data.course_id,
+      courseName: course?.name ?? "",
+      holesCount: data.holes_count,
+      nineOption: data.nine_option === "back" ? "back" : "front",
+      rounds: data.rounds,
+      startType: data.start_type === "shotgun" ? "shotgun" : "tee_times",
+      shortCode: data.short_code,
+      welcomeMessage: data.welcome_message ?? "",
+      isPublic: data.is_public,
+      publishedAt: data.published_at,
+    });
+  },
+);
+
+/**
+ * The event's primary format row as the Settings tab edits it (M4-T008):
+ * the same shape the wizard's Format step persists, read through the
+ * request-bound client so RLS applies.
+ */
+export type EventAdminFormat = {
+  readonly format: string;
+  readonly teamSize: number;
+  readonly scoringBasis: "gross" | "net" | "both";
+  readonly handicapAllowancePct: number | null;
+  readonly maxScoreRule: "none" | "fixed" | "double_par" | "net_double_bogey";
+  readonly maxScoreFixedCap: number | null;
+  readonly tiebreakMethod: "card_off" | "none";
+};
+
+export const getEventAdminFormat = cache(
+  async (eventId: string): Promise<EventAdminFormat | null> => {
+    const client = await getRequestSupabase();
+    const { data, error } = await client
+      .from("event_formats")
+      .select(
+        "format, team_size, scoring_basis, handicap_allowance_pct, max_score_rule, max_score_fixed_cap, tiebreak_method",
+      )
+      .eq("event_id", eventId)
+      .eq("is_primary", true)
+      .maybeSingle<{
+        format: string;
+        team_size: number;
+        scoring_basis: string;
+        handicap_allowance_pct: number | string | null;
+        max_score_rule: string;
+        max_score_fixed_cap: number | null;
+        tiebreak_method: string;
+      }>();
+
+    if (error) {
+      throw new Error(`Failed to load event format: ${error.message}`);
+    }
+    if (!data) return null;
+
+    return Object.freeze({
+      format: data.format,
+      teamSize: data.team_size,
+      scoringBasis: (["gross", "net", "both"] as const).includes(
+        data.scoring_basis as "gross",
+      )
+        ? (data.scoring_basis as EventAdminFormat["scoringBasis"])
+        : "both",
+      handicapAllowancePct:
+        data.handicap_allowance_pct === null
+          ? null
+          : Number(data.handicap_allowance_pct),
+      maxScoreRule: (
+        ["none", "fixed", "double_par", "net_double_bogey"] as const
+      ).includes(data.max_score_rule as "none")
+        ? (data.max_score_rule as EventAdminFormat["maxScoreRule"])
+        : "none",
+      maxScoreFixedCap: data.max_score_fixed_cap,
+      tiebreakMethod: (["card_off", "none"] as const).includes(
+        data.tiebreak_method as "card_off",
+      )
+        ? (data.tiebreak_method as EventAdminFormat["tiebreakMethod"])
+        : "card_off",
+    });
+  },
+);
+
+/**
+ * The Overview tab's counters (M4-T008): players attached, groups persisted,
+ * and scores recorded — each read through the request-bound client so RLS
+ * applies.
+ */
+export type EventAdminCounters = {
+  readonly players: number;
+  readonly groups: number;
+  readonly scores: number;
+};
+
+export const getEventAdminCounters = cache(
+  async (
+    clubId: string,
+    eventId: string,
+  ): Promise<EventAdminCounters> => {
+    const client = await getRequestSupabase();
+
+    const [players, groups, scores] = await Promise.all([
+      client
+        .from("event_players")
+        .select("id, events!inner(club_id)", { count: "exact", head: true })
+        .eq("event_id", eventId)
+        .eq("events.club_id", clubId),
+      client
+        .from("groups")
+        .select("id", { count: "exact", head: true })
+        .eq("event_id", eventId),
+      client
+        .from("scores")
+        .select("id", { count: "exact", head: true })
+        .eq("event_id", eventId),
+    ]);
+
+    if (players.error) {
+      throw new Error(`Failed to count players: ${players.error.message}`);
+    }
+    if (groups.error) {
+      throw new Error(`Failed to count groups: ${groups.error.message}`);
+    }
+    if (scores.error) {
+      throw new Error(`Failed to count scores: ${scores.error.message}`);
+    }
+
+    return Object.freeze({
+      players: players.count ?? 0,
+      groups: groups.count ?? 0,
+      scores: scores.count ?? 0,
+    });
+  },
+);
+
 // ─── Groups & teams step loads (M4-T006) ─────────────────────────────────────
 
 export type GroupRow = {

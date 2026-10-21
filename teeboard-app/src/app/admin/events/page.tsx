@@ -113,14 +113,24 @@ export default async function EventsPage() {
           {rest.map((event) => (
             <li key={event.id}>
               <Card>
-                <CardContent className="pt-0">
-                  <p className="font-heading text-base font-medium text-foreground">
-                    {event.name}
-                  </p>
-                  <p className="mt-0.5 text-sm text-muted-foreground tabular-nums">
-                    {formatEventDate(event.startDate)} ·{" "}
-                    {STATUS_LABELS[event.status] ?? event.status}
-                  </p>
+                <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-0">
+                  <div className="min-w-0">
+                    <Link
+                      href={`/admin/events/${event.id}`}
+                      className="font-heading text-base font-medium text-foreground underline-offset-4 hover:underline"
+                    >
+                      {event.name}
+                    </Link>
+                    <p className="mt-0.5 text-sm text-muted-foreground tabular-nums">
+                      {formatEventDate(event.startDate)} ·{" "}
+                      {STATUS_LABELS[event.status] ?? event.status}
+                    </p>
+                  </div>
+                  <Button asChild variant="outline">
+                    <Link href={`/admin/events/${event.id}`}>
+                      Manage event
+                    </Link>
+                  </Button>
                 </CardContent>
               </Card>
             </li>
