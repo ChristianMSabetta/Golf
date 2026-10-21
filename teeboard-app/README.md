@@ -39,6 +39,7 @@ Apply the migrations in order to your Supabase project: open the Supabase dashbo
 1. `20260101000000_create_waitlist_table.sql` — the Phase 0 `waitlist` table plus an insert-only RLS policy for the anon role (signups in, nothing out).
 2. `20260101000100_create_phase1_schema.sql` — the full Phase 1 schema (see [Data Model](#data-model)).
 3. `20260101000200_enable_rls_policies.sql` — explicit per-role grants and cross-club isolation policies on every table (see [Row Level Security](#row-level-security)).
+4. `20260101000300_event_wizard_drafts.sql` — the event wizard's round-structure columns plus the `shamble` scoring format (M4-T003); no policy changes — the Phase 1 events policies already isolate drafts per club.
 
 Row Level Security is enabled on every table with explicit per-role grants (see [Row Level Security](#row-level-security)): `anon` gets nothing except the waitlist insert, `authenticated` (= club staff) is isolated to its own club's rows on every table, and superadmin access is gated by `profiles.is_superadmin`. The only anon write path is the `submit_score` RPC (granted `execute` to `anon`/`authenticated`), a `security definer` function with an empty `search_path` that validates a 32-char crypto-random group token and rate-limits writes to 60 requests/minute per token. Cross-club isolation is proven by the automated pgTAP suites in `supabase/tests/` (see [Testing the database](#testing-the-database)).
 
@@ -140,8 +141,8 @@ Super-admin access is gated by `profiles.is_superadmin` (a dedicated policy per 
 
 | Table | Purpose |
 | --- | --- |
-| `events` | Per-club event with `event_status` (`draft → scheduled → live → completed → archived`) and scorer PIN columns (`scorer_pin_hash`/`scorer_pin_salt`) |
-| `event_formats` | Formats per event (`stroke_play`, `stableford`, `match_play`, …); one primary per event via partial unique index |
+| `events` | Per-club event with `event_status` (`draft → scheduled → live → completed → archived`) and scorer PIN columns (`scorer_pin_hash`/`scorer_pin_salt`). M4-T003 adds the wizard's round structure: `holes_count` (9/18), `nine_option` (front/back), `rounds` (1–2), `start_type` (`tee_times`/`shotgun`) |
+| `event_formats` | Formats per event (`stroke_play`, `stableford`, `match_play`, … — `shamble` added in M4-T003); one primary per event via partial unique index. The wizard's Format step settings live on the primary row: `team_size`, `scoring_basis`, `handicap_allowance_pct`, `max_score_rule`, `max_score_fixed_cap`, `tiebreak_method` |
 | `players` | Club-level golfer with `handicap_index`, `whs_number` (WHS/USGA scoring inputs) |
 | `groups` | Playing groups per event (foursomes / tee times) |
 | `event_players` | One entry per player per event: `group_token` (32-char crypto-random hex, the only player credential), `tee_set_id`, `course_handicap`, `revoked_at` |
@@ -206,7 +207,7 @@ Supabase Auth handles staff/admin sign-in with **both magic link and password** 
 
 ## Admin App
 
-The authenticated admin app lives under `src/app/admin/` and is **server-side protected end to end**: the admin layout (`src/app/admin/layout.tsx`) authenticates every admin request through `requireStaff()` before any content renders — an unauthenticated or insufficient-role visitor is redirected to `/sign-in` before the page streams. The shell renders the section navigation (Dashboard, Courses, Club settings) plus the top bar with the club identity and sign-out.
+The authenticated admin app lives under `src/app/admin/` and is **server-side protected end to end**: the admin layout (`src/app/admin/layout.tsx`) authenticates every admin request through `requireStaff()` before any content renders — an unauthenticated or insufficient-role visitor is redirected to `/sign-in` before the page streams. The shell renders the section navigation (Dashboard, Courses, Events, Players, Club settings) plus the top bar with the club identity and sign-out.
 
 - **Dashboard (`/admin`)** — post-sign-in landing for owners and staff: the signed-in identity and role plus the club summary (name, timezone, contact) read server-side from the database.
 - **Club settings (`/admin/settings`)** — club profile editing (name, logo URL, primary color, timezone) validated by the shared Zod schema (`src/lib/club/schema.ts`) on both client and server. Saves run through the `updateClubProfile` server action, which re-authorizes server-side (owners and head pros only) and persists via the service-role client because `clubs` is read-only under RLS — the tenant root is only ever written by trusted server code. Success revalidates the admin layout so the new branding renders immediately.
@@ -223,6 +224,13 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
   - **Duplicate detection & merge** — players sharing the same name AND email are grouped (`src/lib/players/duplicates.ts`, pure) and surfaced in a panel plus row flags. One click merges via the `mergePlayers` server action: blank keeper fields are backfilled from the source, `event_players` rows are re-pointed at the keeper (or dropped where the keeper already holds a slot — `event_players` is unique per event+player), and the source row is deleted — event history and score references survive through the re-pointed entries. All writes are service-role with the club filter enforced in every `.eq("club_id", …)`.
 
 **Club branding** flows from one place: `resolveClubBrand` (`src/lib/brand.ts`) resolves a club's stored settings into a typed `ClubBrand` (name, logo URL, normalized `#RRGGBB` primary color, IANA timezone), falling back to the env-var-backed product defaults for anything unset. No component hardcodes a club name, color, or logo. Staff management (invitations, plan limits) and super-admin surfaces arrive in Phase 3.
+
+- **Event wizard (`/admin/events`, `/admin/events/new`) — M4-T003** — the 5-step event creation framework:
+  - **Step registry & gating** — the wizard's five steps (Basics, Format, Players, Groups & teams, Extras & publish) are declared in one registry (`src/lib/events/schema.ts`); navigation is free to any unlocked or previously visited step, and each step unlocks only once its predecessors validate. Validation is the shared Zod contract running identically client- and server-side, so progression blocks on exactly what the autosave action enforces.
+  - **Autosave** — every step persists through role-gated server actions (`src/lib/events/actions.ts`): the first valid Basics save creates the `events` draft row; later saves update it and upsert the primary `event_formats` row. Values autosave debounced client-side, so a draft survives a refresh with all entered data. Drafts carry a crypto-random unpublished PIN hash (the Phase 1 columns are NOT NULL; the real PIN is chosen and rotated atomically at publish in M4-T007).
+  - **Basics step** — event name, date, course (picked from the club's course editor), 9 or 18 holes (front/back nine for 9), 1–2 rounds, and tee-times vs. shotgun start.
+  - **Format step** — the five scoring formats (stroke play, scramble, best ball, Stableford, shamble), team size (1–4, individual formats locked to 1), gross/net/both scoring, handicap allowance percentage, maximum-score rule (WHS net double bogey default for stroke play/best ball), and the USGA card-off tiebreak. **Defaults derive from the WHS allowances in `@/lib/scoring`** (`WHS_DEFAULT_ALLOWANCE_PCT` maps the Rule 5.5 constants — 95% individual, 85% four-ball), so the wizard pre-fills exactly what the scoring engine assumes.
+  - **RLS** — reads run through the request-bound client and writes through the service-role client with the club filter in every `.eq("club_id", …)`; the Phase 1 events policies keep draft events invisible outside the owning club. The wizard's columns arrive in `20260101000300_event_wizard_drafts.sql` (plus the `shamble` enum value); no policy changes were needed.
 
 ## Running the Project
 
@@ -319,6 +327,10 @@ src/
       courses/       # course manager (M4-T001): list page + new/[id] editor —
                      # 9/18-hole scorecard grid, tees w/ rating+slope,
                      # paste-from-scorecard parser
+      events/         # event manager (M4-T003): list page + new/ wizard —
+                     # 5-step framework w/ per-step Zod gating + autosave,
+                     # Basics + Format steps implemented (Players/Groups/
+                     # Extras arrive M4-T005..T007)
       players/       # club player database (M4-T002): searchable table with
                      # inline handicap edits, CSV import/export, duplicate merge
       settings/      # club profile settings page (server component + form)
@@ -330,6 +342,9 @@ src/
     globals.css      # Tailwind theme: brand design tokens and dark TV palette
   components/
     admin/           # admin shell: nav, top bar, sign-out, club profile form
+                     # course-editor/ — scorecard grid + tees + paste parser (M4-T001)
+                     # event-wizard/ — 5-step wizard framework (M4-T003): step rail,
+                     #  Basics + Format forms w/ debounced autosave + Zod gating
                      # players/ — table w/ search+sort+inline HI edit, CSV panel,
                      # duplicate merge panel (M4-T002)
     auth/            # sign-in + sign-up forms (useActionState server actions)
@@ -363,6 +378,15 @@ src/
                      #  club-filtered service-role writes, delete blocked when
                      #  an event references the course)
       course.test.ts # Vitest suite: schema bounds + parser variants
+    events/
+      schema.ts      # shared client/server Zod contracts (M4-T003): the wizard
+                     #  step registry, Basics + Format steps, WHS default
+                     #  allowances derived from @/lib/scoring
+      wizard.ts      # pure step logic: validation gating, navigation, completion
+                     #  marking, DB-row → draft mappers (+ wizard.test.ts suite)
+      server.ts      # RLS-respecting event list + draft loading
+      actions.ts     # saveBasicsStep/saveFormatStep server actions (role-gated,
+                     #  club-filtered service-role writes, draft-only edits)
     players/
       schema.ts      # shared client/server Zod schemas: player rows, inline
                      #  handicap edits (−5…54, one decimal), CSV import rows,

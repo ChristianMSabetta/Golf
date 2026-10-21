@@ -30,6 +30,11 @@ export default async function AdminLayout({
       icon: "courses",
     });
     items.push({
+      href: "/admin/events",
+      label: "Events",
+      icon: "events",
+    });
+    items.push({
       href: "/admin/players",
       label: "Players",
       icon: "players",
