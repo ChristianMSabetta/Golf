@@ -263,6 +263,14 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
     - **Welcome message & visibility** — a ≤ 2000-character message for the player surfaces and the `is_public` toggle that gates the public leaderboard/TV URLs for strangers.
     - **Publish** — `publishEvent` (`src/lib/events/extras-actions.ts`) transitions the draft in **one atomic update**: `status → scheduled`, a unique 6-char short code (collision-checked, ambiguous glyphs excluded), the **rotated salted 4-digit scorer PIN** (replacing the placeholder hash the draft carried), `published_at`, and `is_public`. It then re-mints every attached player's `group_token` — a fresh 32-char crypto-random hex per group member (`node:crypto`, never `Math.random`). The clear PIN is returned exactly once (it is unrecoverable from the salted hash) and presented with **copyable shareable links**: public leaderboard (`/e/<code>`), TV (`/e/<code>/tv`), and scorer entry (`/score` + the PIN). Publishing requires players and at least one saved group; a failure leaves the event a draft with its old credentials, retryable.
   - **RLS** — reads run through the request-bound client and writes through the service-role client with the club filter in every `.eq("club_id", …)`; the Phase 1 events policies keep draft events invisible outside the owning club. The wizard's columns arrive in `20260101000300_event_wizard_drafts.sql` (plus the `shamble` enum value) and the Groups step's in `20260101000500_event_groups_shotgun.sql`; no policy changes were needed.
+- **Event admin (`/admin/events/[id]`) — M4-T008** — where staff land after the wizard: the tabbed management surface over the live event (`src/lib/events/admin.ts` + `src/lib/events/admin-actions.ts`), reading through the request-bound client so every query stays inside the signed-in club's RLS:
+  - **Tabs** — Overview, Players, Groups, and Settings, declared in one registry (`EVENT_ADMIN_TABS`) and deep-linkable via `?tab=`; the panels arrive as server-rendered React nodes so the tab switch is a cheap client toggle with no data refetch.
+  - **Overview** — the event status and day (course, holes, rounds, start type), the live counters (players attached, groups persisted, scores recorded), and the copyable shareable links from publish — public leaderboard (`/e/<code>`), TV (`/e/<code>/tv`), and scorer entry (`/score` + the PIN, which is stored only as a salted hash and shown once at publish).
+  - **Players** — the event roster with each player's email, handicap index, and group, plus a quick remove (draft events only — the remove action is refused server-side past publish; a published event's roster is the day's actual field). The handicap index itself is edited on the club player page, keeping one source of truth per player.
+  - **Groups** — the read-only composition view: each group's members (with HI), shotgun starting hole, and cart number, plus the unassigned pool. Group editing lives in the wizard (drafts).
+  - **Settings & the mid-event safeguard** — the editable configuration (name, date, holes, rounds, start type, the format block through tiebreak, welcome message, visibility) validated by the shared `eventSettingsSchema` (`src/lib/events/admin.ts`, unit-tested in `admin.test.ts`). Changing the **scoring format on a live (published) event requires typing `CHANGE`** — the client reveals a confirmation input that unlocks the save button, and `saveEventSettings` re-checks the guard server-side (a tampered client that skips the input cannot apply the change). Drafts change freely.
+  - **Quick actions** — **Duplicate** (`duplicateEvent`: a full copy into a new draft — event row, primary format, flights, side games, sponsors, groups, and roster with fresh 32-char crypto-random group tokens; statuses, short code, PIN, and scores never copy), **Archive** (`archiveEvent`: published events only — scheduled/live → archived), and **Delete** (`deleteEvent`), which is **restricted to draft events server-side**: the delete filters `.eq("status", "draft")` with a `count: "exact"` check, so a manipulated request naming a published event deletes nothing and the UI's draft-only button is a convenience, not the safeguard.
+  - **Events list** — `/admin/events` links drafts back into the wizard and every published event to its admin page.
   - **AI one-sentence setup (`M4-T004`)** — the "Describe it in one sentence" card at the top of the wizard turns a free-text description into pre-fill data: `POST /api/admin/events/ai-parse` makes a single Claude Haiku call (temperature 0, 8-second abort budget) whose output is Zod-validated (`src/lib/ai/schema.ts`) against the wizard's own step enums before anything pre-fills. The adapter (`src/lib/ai/claude-adapter.ts` → the pure call core in `src/lib/ai/messages.ts`) reads only `ANTHROPIC_API_KEY`/`CLAUDE_MODEL` from the environment — no SDK or key ever reaches a component. Safeguards, all server-side: a 30-calls/day/club rate limit derived by counting the current day's `ai_parse_log` rows attributed to the club (the schema is frozen — no rate-limit tables), every call logged to `ai_parse_log` (input, output, validated flag, model, error, latency) in `20260101000400_ai_parse_log_club.sql`, and a graceful fallback that answers "Couldn't read that" with a null prefill on invalid output, timeout, provider failure, or a missing key — leaving the wizard exactly as it was. The **AI never writes to the database** — its only footprint is the log row, and nothing pre-fills until the user saves. Prefilled fields carry an 'Auto-filled' badge until the user touches that field.
 
 ## Running the Project
@@ -361,10 +369,11 @@ src/
       courses/       # course manager (M4-T001): list page + new/[id] editor —
                      # 9/18-hole scorecard grid, tees w/ rating+slope,
                      # paste-from-scorecard parser
-      events/         # event manager (M4-T003): list page + new/ wizard —
-                     # 5-step framework w/ per-step Zod gating + autosave,
-                     # Basics + Format + Players + Groups steps implemented
-                     # (Extras arrives M4-T007)
+      events/         # event manager: list page + new/ wizard (M4-T003..T007,
+                     #  5-step framework w/ per-step Zod gating + autosave +
+                     #  publish minting short code/PIN/tokens) + [id]/ admin
+                     #  page (M4-T008): tabbed Overview/Players/Groups/Settings
+                     #  w/ typed-CHANGE format-edit safeguard + quick actions
       players/       # club player database (M4-T002): searchable table with
                      # inline handicap edits, CSV import/export, duplicate merge
       settings/      # club profile settings page (server component + form)
@@ -387,6 +396,12 @@ src/
                      #  payout presets + sponsor uploads (club-scoped Storage) +
                      #  welcome message + publish → short code, per-group tokens,
                      #  4-digit scorer PIN, copyable shareable links
+                     # event-admin/ — tabbed Overview/Players/Groups/Settings
+                     #  surface (M4-T008): status + counters + copyable
+                     #  publish links, roster w/ quick remove, read-only
+                     #  groups view, settings w/ typed-CHANGE format-change
+                     #  confirmation, quick actions (Duplicate → new draft,
+                     #  Archive, draft-only Delete enforced server-side)
                      # players/ — table w/ search+sort+inline HI edit, CSV panel,
                      #  duplicate merge panel (M4-T002)
     auth/            # sign-in + sign-up forms (useActionState server actions)
@@ -450,6 +465,12 @@ src/
                      #  publishEvent server actions (role-gated, club-filtered,
                      #  draft-only; publish mints short code + rotated salted
                      #  PIN + per-group tokens atomically)
+       admin.ts        # pure event-admin logic (M4-T008): the tab registry, the
+                      #  CHANGE confirmation guard for live format edits, the
+                      #  settings Zod contract (+ admin.test.ts suite)
+       admin-actions.ts # saveEventSettings/duplicateEvent/archiveEvent/deleteEvent
+                      #  server actions (role-gated, club-filtered; the CHANGE
+                      #  guard enforced server-side; delete filters status=draft)
     players/
       schema.ts      # shared client/server Zod schemas: player rows, inline
                      #  handicap edits (−5…54, one decimal), CSV import rows,
