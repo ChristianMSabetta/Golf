@@ -9,6 +9,7 @@ import { AiPrefillCard } from "./ai-prefill-card";
 import { BasicsStep } from "./basics-step";
 import { FormatStep } from "./format-step";
 import { PlayersStep } from "./players-step";
+import { GroupsStep } from "./groups-step";
 import {
   completedSteps,
   furthestStep,
@@ -24,6 +25,7 @@ import type {
   RosterAttachmentRow,
   RosterPlayerRow,
 } from "@/lib/players/server";
+import type { GroupRow, GroupedAttachmentRow } from "@/lib/events/server";
 import type { AiEventPrefill } from "@/lib/ai/schema";
 
 /**
@@ -31,8 +33,8 @@ import type { AiEventPrefill } from "@/lib/ai/schema";
  * validation gating, free navigation to any visited/unlocked step, and
  * debounced draft autosave through the server actions. The step registry
  * drives the rail; implemented steps render their form — Basics and Format
- * (M4-T003), Players (M4-T005) — while Groups (M4-T006) and Extras &
- * publish (M4-T007) land later in this milestone.
+ * (M4-T003), Players (M4-T005), Groups & teams (M4-T006) — while Extras &
+ * publish (M4-T007) lands later in this milestone.
  */
 
 export function EventWizard({
@@ -40,6 +42,8 @@ export function EventWizard({
   courses,
   clubPlayers,
   attachedPlayers,
+  groupedPlayers,
+  eventGroups,
   initialStep,
   canEdit,
 }: {
@@ -47,6 +51,8 @@ export function EventWizard({
   courses: readonly CourseSummary[];
   clubPlayers: readonly RosterPlayerRow[];
   attachedPlayers: readonly RosterAttachmentRow[];
+  groupedPlayers: readonly GroupedAttachmentRow[];
+  eventGroups: readonly GroupRow[];
   initialStep: WizardStepId;
   canEdit: boolean;
 }) {
@@ -74,17 +80,20 @@ export function EventWizard({
   /**
    * Validation-driven gating: a step is reachable when its predecessors'
    * data validates. `basics` validates from the draft (or is step 0), so
-   * `format` unlocks only once Basics parses clean.
+   * `format` unlocks only once Basics parses clean; `groups` unlocks once
+   * players are attached to the draft.
    */
   const basicsValid =
     draft !== null && basicsStepSchema.safeParse(draft).success;
   const furthest = furthestStep(
     basicsValid ? draft : null,
     draft?.formatData ?? null,
+    attachedPlayers.length,
   );
   const completed = completedSteps(
     basicsValid ? draft : null,
     draft?.formatData ?? null,
+    attachedPlayers.length,
   );
   const steps = wizardSteps(furthest, completed);
 
@@ -219,7 +228,32 @@ export function EventWizard({
         )
       ) : null}
 
-      {step !== "basics" && step !== "format" && step !== "players" ? (
+      {step === "groups" ? (
+        eventId !== null ? (
+          <GroupsStep
+            eventId={eventId}
+            draft={draft}
+            attached={groupedPlayers}
+            groups={eventGroups}
+            readOnly={!canEdit}
+          />
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>Save the basics first</CardTitle>
+              <CardDescription>
+                The groups step attaches to a saved draft — finish the
+                basics above and pairings unlock here.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        )
+      ) : null}
+
+      {step !== "basics" &&
+      step !== "format" &&
+      step !== "players" &&
+      step !== "groups" ? (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">

@@ -40,6 +40,8 @@ Apply the migrations in order to your Supabase project: open the Supabase dashbo
 2. `20260101000100_create_phase1_schema.sql` — the full Phase 1 schema (see [Data Model](#data-model)).
 3. `20260101000200_enable_rls_policies.sql` — explicit per-role grants and cross-club isolation policies on every table (see [Row Level Security](#row-level-security)).
 4. `20260101000300_event_wizard_drafts.sql` — the event wizard's round-structure columns plus the `shamble` scoring format (M4-T003); no policy changes — the Phase 1 events policies already isolate drafts per club.
+5. `20260101000400_ai_parse_log_club.sql` — the `ai_parse_log` columns attributing every AI call to the club (M4-T004) for the rate limit.
+6. `20260101000500_event_groups_shotgun.sql` — the Groups step's `groups.starting_hole`/`groups.cart_number` columns plus the unique `(event_id, starting_hole)` index (M4-T006); no policy changes — the Phase 1 groups policies already isolate groups per club.
 
 Row Level Security is enabled on every table with explicit per-role grants (see [Row Level Security](#row-level-security)): `anon` gets nothing except the waitlist insert, `authenticated` (= club staff) is isolated to its own club's rows on every table, and superadmin access is gated by `profiles.is_superadmin`. The only anon write path is the `submit_score` RPC (granted `execute` to `anon`/`authenticated`), a `security definer` function with an empty `search_path` that validates a 32-char crypto-random group token and rate-limits writes to 60 requests/minute per token. Cross-club isolation is proven by the automated pgTAP suites in `supabase/tests/` (see [Testing the database](#testing-the-database)).
 
@@ -151,7 +153,7 @@ Super-admin access is gated by `profiles.is_superadmin` (a dedicated policy per 
 | `events` | Per-club event with `event_status` (`draft → scheduled → live → completed → archived`) and scorer PIN columns (`scorer_pin_hash`/`scorer_pin_salt`). M4-T003 adds the wizard's round structure: `holes_count` (9/18), `nine_option` (front/back), `rounds` (1–2), `start_type` (`tee_times`/`shotgun`) |
 | `event_formats` | Formats per event (`stroke_play`, `stableford`, `match_play`, … — `shamble` added in M4-T003); one primary per event via partial unique index. The wizard's Format step settings live on the primary row: `team_size`, `scoring_basis`, `handicap_allowance_pct`, `max_score_rule`, `max_score_fixed_cap`, `tiebreak_method` |
 | `players` | Club-level golfer with `handicap_index`, `whs_number` (WHS/USGA scoring inputs) |
-| `groups` | Playing groups per event (foursomes / tee times) |
+| `groups` | Playing groups per event (foursomes / tee times) with a unique `(event_id, name)`; M4-T006 adds the wizard Groups step's `starting_hole` (shotgun start, unique per event via partial index) and `cart_number` |
 | `event_players` | One entry per player per event: `group_token` (32-char crypto-random hex, the only player credential), `tee_set_id`, `course_handicap`, `revoked_at` |
 
 ### Scoring
@@ -244,7 +246,13 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
     - **Preview & flagging** — every staged row shows in a table before commit; rows failing validation (invalid email, missing name, out-of-range handicap) are flagged individually by source line with actionable messages, and any row can be unchecked to skip it. The same person arriving by two paths resolves to one preview row (keyed on name + email, matching the M4-T002 duplicate detector), and rows already attached to the event are marked.
     - **Commit** — `saveEventRoster` (`src/lib/players/roster-actions.ts`) re-validates every row, upserts new/updated players into the club player database with the club filter on every write, and attaches each to the event by inserting an `event_players` row with a fresh crypto-random `group_token` (32-char hex, matching the schema check). Attach is **idempotent** — a player already in the event is skipped, so re-running an import never duplicates.
     - **Detach** — `removeEventPlayer` drops one `event_players` row (the club player row stays); draft events only, enforced server-side.
-  - **RLS** — reads run through the request-bound client and writes through the service-role client with the club filter in every `.eq("club_id", …)`; the Phase 1 events policies keep draft events invisible outside the owning club. The wizard's columns arrive in `20260101000300_event_wizard_drafts.sql` (plus the `shamble` enum value); no policy changes were needed.
+  - **Groups & teams step (`M4-T006`)** — pair the field and persist it against the Phase 1 `groups` + `event_players.group_id` rows:
+    - **Auto-pairing strategies** (`src/lib/events/pairing.ts`, pure) — random (seeded, reshuffles per click), balance-by-handicap (a serpentine draft: team *i* takes the *i*-th lowest with the *i*-th highest, so no team owns the extremes), sorted (consecutive handicap bands), and manual (everything unassigned). Groups always respect the Format step's team size, with the remainder landing on the last group (odd counts never split a player).
+    - **Drag-and-drop** — native HTML5 DnD (`draggable` + `dataTransfer`) moves players between groups and the unassigned pool, persisted through `saveGroupsStep` (`src/lib/events/groups-actions.ts`). No DnD dependency and no per-move reflow — a 120-player field stays responsive.
+    - **Shotgun holes** — when the Basics step chose a shotgun start, each group gets a unique starting hole from the event's played holes (1–18, or just the front/back nine on a 9-hole event), enforced by the unique `(event_id, starting_hole)` index from `20260101000500_event_groups_shotgun.sql` plus server-side validation. More groups than holes surface a warning rather than a silent overlap; tee-times events hide the field.
+    - **Cart numbers** — an editable 1–99 cart number per group, persisted on the `groups` row.
+    - **Persistence** — `saveGroupsStep` clears the previous groups first (their names would collide with the planned ones — `groups` is unique per event + name — and the deletion nulls every `event_players.group_id`), then inserts the planned groups and re-points the members. The persisted shape always matches the editor exactly; a mid-save failure leaves the event consistent (everyone unassigned) and retryable. Role-gated (`owner`/`head_pro`/`event_manager`), club-filtered, draft-only, and the step's numbers must agree with the event's Basics (a stale tab cannot save an old plan onto changed basics).
+  - **RLS** — reads run through the request-bound client and writes through the service-role client with the club filter in every `.eq("club_id", …)`; the Phase 1 events policies keep draft events invisible outside the owning club. The wizard's columns arrive in `20260101000300_event_wizard_drafts.sql` (plus the `shamble` enum value) and the Groups step's in `20260101000500_event_groups_shotgun.sql`; no policy changes were needed.
   - **AI one-sentence setup (`M4-T004`)** — the "Describe it in one sentence" card at the top of the wizard turns a free-text description into pre-fill data: `POST /api/admin/events/ai-parse` makes a single Claude Haiku call (temperature 0, 8-second abort budget) whose output is Zod-validated (`src/lib/ai/schema.ts`) against the wizard's own step enums before anything pre-fills. The adapter (`src/lib/ai/claude-adapter.ts` → the pure call core in `src/lib/ai/messages.ts`) reads only `ANTHROPIC_API_KEY`/`CLAUDE_MODEL` from the environment — no SDK or key ever reaches a component. Safeguards, all server-side: a 30-calls/day/club rate limit derived by counting the current day's `ai_parse_log` rows attributed to the club (the schema is frozen — no rate-limit tables), every call logged to `ai_parse_log` (input, output, validated flag, model, error, latency) in `20260101000400_ai_parse_log_club.sql`, and a graceful fallback that answers "Couldn't read that" with a null prefill on invalid output, timeout, provider failure, or a missing key — leaving the wizard exactly as it was. The **AI never writes to the database** — its only footprint is the log row, and nothing pre-fills until the user saves. Prefilled fields carry an 'Auto-filled' badge until the user touches that field.
 
 ## Running the Project
@@ -345,8 +353,8 @@ src/
                      # paste-from-scorecard parser
       events/         # event manager (M4-T003): list page + new/ wizard —
                      # 5-step framework w/ per-step Zod gating + autosave,
-                     # Basics + Format + Players steps implemented
-                     # (Groups/Extras arrive M4-T006..T007)
+                     # Basics + Format + Players + Groups steps implemented
+                     # (Extras arrives M4-T007)
       players/       # club player database (M4-T002): searchable table with
                      # inline handicap edits, CSV import/export, duplicate merge
       settings/      # club profile settings page (server component + form)
@@ -362,7 +370,9 @@ src/
                      # event-wizard/ — 5-step wizard framework (M4-T003): step rail,
                      #  Basics + Format forms w/ debounced autosave + Zod gating,
                      #  Players step (M4-T005): CSV/club-picker/manual paths →
-                     #  merged deduped preview w/ per-row flags → idempotent attach
+                     #  merged deduped preview w/ per-row flags → idempotent attach,
+                     #  Groups step (M4-T006): pairing strategies + native HTML5
+                     #  drag-and-drop + shotgun holes + cart numbers
                      # players/ — table w/ search+sort+inline HI edit, CSV panel,
                      # duplicate merge panel (M4-T002)
     auth/            # sign-in + sign-up forms (useActionState server actions)
@@ -402,9 +412,18 @@ src/
                      #  allowances derived from @/lib/scoring
       wizard.ts      # pure step logic: validation gating, navigation, completion
                      #  marking, DB-row → draft mappers (+ wizard.test.ts suite)
-      server.ts      # RLS-respecting event list + draft loading
+      pairing.ts     # pure Groups-step logic (M4-T006): pairing strategies
+                     #  (random/balance/sorted/manual), shotgun hole assignment,
+                     #  cart handling, drag-drop move semantics, plan validation,
+                     #  payload contract (+ pairing.test.ts suite)
+      server.ts      # RLS-respecting event list + draft loading + groups/grouped
+                     #  roster reads (M4-T006)
       actions.ts     # saveBasicsStep/saveFormatStep server actions (role-gated,
                      #  club-filtered service-role writes, draft-only edits)
+      groups-actions.ts # saveGroupsStep (M4-T006): delete-then-insert group replace —
+                     #  clear previous groups (unique names + nulls members),
+                     #  insert planned groups, re-point event_players.group_id;
+                     #  validated server-side
     players/
       schema.ts      # shared client/server Zod schemas: player rows, inline
                      #  handicap edits (−5…54, one decimal), CSV import rows,

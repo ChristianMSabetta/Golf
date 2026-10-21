@@ -2,13 +2,21 @@ import type { Metadata } from "next";
 import { requireStaff } from "@/lib/auth/authorization";
 import { getStaffClub } from "@/lib/club/server";
 import { listCourses } from "@/lib/course/server";
-import { getWizardDraft } from "@/lib/events/server";
+import {
+  getEventGroups,
+  getWizardDraft,
+  listGroupedPlayers,
+} from "@/lib/events/server";
 import {
   listEventRoster,
   listRosterPlayers,
   type RosterAttachmentRow,
   type RosterPlayerRow,
 } from "@/lib/players/server";
+import type {
+  GroupRow,
+  GroupedAttachmentRow,
+} from "@/lib/events/server";
 import { EventWizard } from "@/components/admin/event-wizard/event-wizard";
 import {
   WIZARD_STEP_IDS,
@@ -67,16 +75,22 @@ export default async function NewEventPage({
   const eventId = first(params.event);
   const initialStep = stepFromParams(first(params.step));
 
-  const [draft, courses, clubPlayers, attachedPlayers]: [
+  const [draft, courses, clubPlayers, roster, grouped, eventGroups]: [
     Awaited<ReturnType<typeof getWizardDraft>>,
     Awaited<ReturnType<typeof listCourses>>,
     readonly RosterPlayerRow[],
     readonly RosterAttachmentRow[],
+    readonly GroupedAttachmentRow[],
+    readonly GroupRow[],
   ] = await Promise.all([
     eventId ? getWizardDraft(eventId) : Promise.resolve(null),
     listCourses(context.club.id),
     listRosterPlayers(context.club.id),
     eventId ? listEventRoster(context.club.id, eventId) : Promise.resolve([]),
+    eventId
+      ? listGroupedPlayers(context.club.id, eventId)
+      : Promise.resolve([]),
+    eventId ? getEventGroups(eventId) : Promise.resolve([]),
   ]);
 
   const canEdit =
@@ -88,7 +102,9 @@ export default async function NewEventPage({
       draft={draft}
       courses={courses}
       clubPlayers={clubPlayers}
-      attachedPlayers={attachedPlayers}
+      attachedPlayers={roster}
+      groupedPlayers={grouped}
+      eventGroups={eventGroups}
       initialStep={initialStep}
       canEdit={canEdit}
     />
