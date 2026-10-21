@@ -6,11 +6,14 @@ import { updateSession } from "@/lib/supabase/middleware";
  * 1. Refreshes the Supabase Auth session so every request carries fresh
  *    access tokens before reaching the app (src/lib/supabase/middleware.ts).
  * 2. Applies a nonce-based Content-Security-Policy to every non-asset
- *    response. A per-request nonce lets Next.js bootstrap scripts run while
- *    the rest of the policy stays locked down. Sources:
+ *    response, with the nonce echoed to Next.js through the request
+ *    headers so rendered <script> tags carry it (required with
+ *    'strict-dynamic'). Sources:
  *    - app.cal.com — the Cal.com inline embed (script, iframe, images, XHR)
  *    - *.supabase.co — Supabase API/Realtime called from the browser
  *    Resend is called server-side only and needs no browser sources.
+ * 3. In development the CSP relaxes to 'unsafe-inline'/'unsafe-eval' for
+ *    React Fast Refresh and adds a local ws: source for HMR.
  */
 const CSP_DIRECTIVES = [
   "default-src 'self'",
@@ -55,17 +58,33 @@ function buildDevCsp(): string {
 }
 
 export async function middleware(request: NextRequest) {
-  const response = await updateSession(request);
-  response.headers.set(
-    "Content-Security-Policy",
-    process.env.NODE_ENV === "development" ? buildDevCsp() : buildCsp(nonce()),
-  );
+  if (process.env.NODE_ENV === "development") {
+    const response = await updateSession(request);
+    response.headers.set("Content-Security-Policy", buildDevCsp());
+    return response;
+  }
+
+  // The nonce travels BOTH ways: on the REQUEST headers (`x-nonce` plus a
+  // Content-Security-Policy header) so Next.js extracts it during SSR and
+  // applies it to the <script> tags it renders (with 'strict-dynamic',
+  // rendered scripts are only allowed by their nonce), and on the RESPONSE
+  // CSP header so the browser enforces the same policy. The request headers
+  // differ from the incoming ones, so every matched route renders
+  // dynamically — required, since a prerendered page cannot carry a
+  // per-request nonce. updateSession forwards these same headers through
+  // both of its response paths so a token refresh never drops the nonce.
+  const nonce = crypto.randomUUID().replace(/-/g, "");
+  const csp = buildCsp(nonce);
+
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set("Content-Security-Policy", csp);
+
+  const response = await updateSession(request, requestHeaders);
+  response.headers.set("x-nonce", nonce);
+  response.headers.set("Content-Security-Policy", csp);
 
   return response;
-}
-
-function nonce(): string {
-  return crypto.randomUUID().replace(/-/g, "");
 }
 
 export const config = {

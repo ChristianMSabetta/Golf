@@ -97,6 +97,12 @@ All configuration is environment-driven; nothing is hardcoded in components.
 | --- | --- | --- |
 | `NEXT_PUBLIC_CALCOM_EVENT_LINK` | client + server | Cal.com event-type link for the embedded 15-minute booking widget (full URL or `USERNAME/EVENT-TYPE` path). When unset or unusable, the booking section is hidden instead of rendering a broken embed |
 
+### Testing
+
+| Variable | Scope | Description |
+| --- | --- | --- |
+| `POSTGRES_URL` | server (tests only) | Connection string of a throwaway plain Postgres 15+ for the pgTAP RLS suites via `npm run test:rls` (see [Testing the database](#testing-the-database)); on Supabase use `supabase test db` instead. No Supabase secrets go here |
+
 ## Data Model
 
 The full schema lives in `supabase/migrations/20260101000100_create_phase1_schema.sql`: **21 domain tables plus 2 server-side security state tables**, all with Row Level Security enabled. Types are Postgres enums (`staff_role`, `tee_gender`, `event_status`, `scoring_format`) with check constraints and foreign keys throughout.
@@ -253,6 +259,8 @@ src/
       settings/      # club profile settings page (server component + form)
     auth/callback/   # magic-link code → session exchange (server-side)
     api/waitlist/    # POST route handler validating waitlist signups (Zod)
+    api/health/      # readiness probe (Supabase round-trip; 503 when down)
+                     #  └─ live/ liveness probe (process-up only, no deps)
     layout.tsx       # root layout: fonts (Fraunces/Inter) and metadata
     globals.css      # Tailwind theme: brand design tokens and dark TV palette
   components/
@@ -304,9 +312,13 @@ public/              # static assets (logo.svg)
 
 Later phases add sibling route groups — `(player)` for the public scoring pages — keeping each surface cleanly separated under `src/app/`. The staff/admin routes live under `admin/` and the `(auth)` group.
 
-## Deployment (Vercel)
+## Deployment
 
-The landing page is deployed on Vercel (Pro, iad1 region) with every environment variable from `.env.local` set in the project's Vercel settings:
+The app is **containerizable and stateless**: one Next.js server process, no local persistent storage, every configuration value and external link (Cal.com, Resend, admin notify address, Supabase keys) supplied through environment variables. All persistent data lives in the managed Supabase Postgres (us-east-1); the compute tier can be swapped (Vercel, Docker on any cloud, a container platform) without data-model changes.
+
+### Vercel (primary)
+
+The landing page deploys on Vercel (Pro, iad1 region) with every environment variable from `.env.local` set in the project's Vercel settings:
 
 1. Import the repository into Vercel (framework preset: Next.js; region: iad1).
 2. In the project → Settings → Environment Variables, add every variable listed in [Environment Variables](#environment-variables) for the Production environment.
@@ -318,16 +330,47 @@ Deployment verification checklist (run against the live URL after each deploy):
 - The page renders hero, pricing, demo video slot, booking section, and waitlist form.
 - A waitlist signup returns "Thanks — I'll reach out within 24 hours.", inserts a row into the Supabase `waitlist` table, and sends one notification to `ADMIN_NOTIFY_EMAIL`.
 - A booking through the Cal.com embed completes and appears on the owner's calendar.
-- Responses carry the Content-Security-Policy header (see below) without the policy blocking the embed or the Supabase calls.
+- `GET /api/health/live` answers `200 {"status":"alive",...}`.
+- `GET /api/health` answers `200 {"status":"healthy","checks":{"config":true,"database":true},...}` and the response includes the `Content-Security-Policy` header.
 
-## Content Security Policy
+### Docker (portable)
 
-A nonce-based CSP is applied by `src/middleware.ts` to every non-asset response (alongside the per-request Supabase session refresh): Next.js bootstrap scripts run via a per-request nonce with `'strict-dynamic'`, while `app.cal.com` is allowed as a script/frame/image/connect source for the booking embed and `*.supabase.co` is allowed for API/Realtime connections. Resend is called server-side only and needs no browser sources. Baseline hardening headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) are set for all routes in `next.config.ts`.
+The same image runs on any container platform (Cloud Run, ECS, Fly.io, a plain Docker host):
 
-## Validation Round Usage
+```bash
+docker build -t teeboard-app .
+docker run --rm -p 3000:3000 --env-file .env.local teeboard-app
+```
 
-The landing page is the tool for the 3-day head-pro outreach. During the round:
+The multi-stage `Dockerfile` builds Next.js with `output: "standalone"` (a self-contained bundle, no build tooling in the runtime image), runs as a non-root user, and exposes a single foreground Node process on `PORT` (default `3000`). No secrets are baked into the image — the same image promotes across environments; only the environment variables change.
 
-- Share the deployed URL with prospects (optionally with `?utm_source=...` — the value is captured and stored with each signup).
-- Every signup lands in the `waitlist` table with email, name, course, state, role, source, and timestamp, and triggers one notification to `ADMIN_NOTIFY_EMAIL` so no lead is missed.
-- Prospects book the 15-min call directly through the embedded Cal.com widget; bookings appear on the owner's calendar with the course name answered from the required question.
+### Health endpoints
+
+| Endpoint | Purpose | Behavior |
+| --- | --- | --- |
+| `GET /api/health/live` | Liveness | `200 {"status":"alive"}` whenever the Node process is up; touches no backing service, so a Supabase outage never restarts healthy instances. `Cache-Control: no-store`. |
+| `GET /api/health` | Readiness | `200 {"status":"healthy","checks":{"config":true,"database":true}}` after a successful Supabase round-trip (head count on `clubs` via the server-side service-role client — RLS grants the anon role nothing, so the request-path client would by design answer 403 on a healthy deployment); `503 {"status":"unhealthy",...}` with the failing check otherwise. Never cached, never authenticated, never exposes secrets (only a head count and latency). |
+
+On Vercel the deployment health dashboard and uptime monitors can point at these endpoints directly. In Docker the image-level `HEALTHCHECK` polls `/api/health/live`.
+
+### Security headers
+
+Every response carries the baseline hardening headers from `next.config.ts` — `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Strict-Transport-Security` (2-year `max-age`, HSTS once served over HTTPS), and `Permissions-Policy` denying camera/microphone/geolocation/payment. The per-route **Content-Security-Policy** is applied in `src/middleware.ts`: a per-request nonce is generated and travels both on the request headers (`x-nonce` + a request `Content-Security-Policy` header, where Next.js extracts it during SSR and applies it to the `<script>` tags it renders) and on the response CSP header (which the browser enforces). `strict-dynamic` + the nonce allow Next.js bootstrap scripts while the policy stays locked down; Cal.com and `*.supabase.co` are the only external script/connect/frame/img sources, `object-src`/`base-uri`/`form-action` are locked to `'self'`, `frame-ancestors 'none'`, and HTTPS upgrades are enforced in production. Because each request carries its own nonce, every matched route renders dynamically (see `src/app/layout.tsx`). The policy never blocks the booking embed or the Supabase Realtime connections; Resend is called server-side only and needs no browser sources.
+
+## Hard Stop — Day-3 Validation Gate (go/no-go)
+
+**Non-negotiable: the build halts here.** Phase 1 (foundations: full schema, RLS, auth, admin skeleton, deployment/security posture) is complete. **No Phase 2 work — and no scoring-engine work of any kind — may begin until the day-3 validation decision is recorded.**
+
+The 3-day head-pro outreach runs against the deployed landing page — the tool for the round. During outreach: share the deployed URL with prospects (optionally with `?utm_source=...` — the value is captured and stored with each signup); every signup lands in the `waitlist` table with email, name, course, state, role, source, and timestamp, and triggers one notification to `ADMIN_NOTIFY_EMAIL` so no lead is missed; prospects book the 15-min call directly through the embedded Cal.com widget, and bookings appear on the owner's calendar with the course name answered from the required question.
+
+On day 3, the go/no-go decision is measured against these success thresholds:
+
+| Threshold | Target | Measured from |
+| --- | --- | --- |
+| Head-pro contacts | **100 contacts** | Outreach tracker (emails/calls/forms initiated) |
+| Conversations | **≥ 10 conversations** | Cal.com bookings completed through the embedded 15-min widget + email replies |
+| Pilot events booked | **≥ 3 pilot events booked** | Confirmed commitments with head pros to run a live event |
+
+**Recording the decision (required before any Phase 2 work):** record the measured numbers against the thresholds above, the resulting go/no-go decision, and the date — in the project's decision log (e.g. a pinned issue or the ops doc of record), not in this README. Only after that decision is recorded may Phase 2 (scoring engine) work begin; if it is **no-go**, the build stays stopped and the decision note steers what happens next. This gate is the point of the Phase 1 hard stop: validation happens before any further engineering investment.
+
+US-English conventions apply across every surface rendered so far (pricing in USD — `$129/month`, yards as the course-distance unit in `holes.yards`, and `MM/DD/YYYY` dates on the US Eastern-default timezone calendar via `resolveClubBrand`).

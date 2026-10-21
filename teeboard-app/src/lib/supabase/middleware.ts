@@ -2,10 +2,24 @@ import "server-only";
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+/**
+ * Refreshes the Supabase Auth session cookie on the incoming request.
+ *
+ * `requestHeaders` (optional) are forwarded to the app on the rewritten
+ * request — used by src/middleware.ts to hand Next.js the per-request CSP
+ * nonce, which Next.js extracts from the request's Content-Security-Policy
+ * header and applies to the <script> tags it renders (see the CSP guide).
+ * Both response paths (the initial rewrite and the cookie-refresh rewrite)
+ * must forward them or the nonce would be lost on token refreshes.
+ */
 export async function updateSession(
   request: NextRequest,
+  requestHeaders?: Headers,
 ): Promise<NextResponse> {
-  let response = NextResponse.next({ request });
+  const forwardedHeaders = requestHeaders ?? request.headers;
+  let response = NextResponse.next({
+    request: { headers: forwardedHeaders },
+  });
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -22,7 +36,9 @@ export async function updateSession(
         return request.cookies.getAll();
       },
       setAll(cookiesToSet) {
-        const rewriteResponse = NextResponse.next({ request });
+        const rewriteResponse = NextResponse.next({
+          request: { headers: forwardedHeaders },
+        });
 
         for (const { name, value } of cookiesToSet) {
           rewriteResponse.cookies.set(name, value);
