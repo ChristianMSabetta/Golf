@@ -55,9 +55,10 @@ export {
   totalStablefordPoints,
 } from "./stableford";
 export {
+  breakTiesByCardOff,
   cardOffBreakdown,
   compareCardOff,
-  breakTiesByCardOff,
+  lastNHolesTotal,
 } from "./tiebreak";
 export { assignFlights } from "./flights";
 export {

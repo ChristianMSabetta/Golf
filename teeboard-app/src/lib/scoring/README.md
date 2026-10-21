@@ -20,7 +20,23 @@ The single home of every WHS/USGA scoring computation in TeeBoard. **Pure TypeSc
 - **Payouts** — purse splits per position (`PAYOUT_PRESET_50_30_20` preset) with correct tie handling: a tie combines every spanned position's amount and splits it equally (`splitEvenly` largest-remainder redistribution — the combined amount is redistributed, never duplicated).
 - **Side games** — skins (gross and net, carryover on tied holes), closest-to-pin, long drive, longest putt. Calcutta and parimutuel are excluded on legal-risk grounds (constraint C24) and must never appear in this package's API.
 
-The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) is built in M3-T003; the package ships with minimal smoke tests per layer so the Vitest wiring is proven from day one.
+The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) is **M3-T003, complete** — see "Verification suite" below.
+
+## Verification suite
+
+`test/` holds the full verification suite — the proof of correctness for this package:
+
+- `handicap.test.ts` — Course/Playing Handicap (RoH 5.1/5.2/5.5), rounding (.5 up), 9-hole conversions, plus players, Committee overrides (5.6)
+- `strokes.test.ts` — per-hole allocation: scattered stroke indices, 9-hole modes (`full`/`front`/`back`), plus-handicap give-backs, multi-pass handicaps
+- `scorecard.test.ts` — maximum-score rules (RoH 3.3b incl. net double bogey), pickups, partial cards, totals
+- `stableford.test.ts` — the USGA/EGA point scale, extrapolation beyond the table, custom scales
+- `tiebreak.test.ts` — card-off stages (last 9/6/3, hole-by-hole backwards), incomplete cards, teams
+- `formats.test.ts` — the five formats: allowances (95%/85%), ranking bases, tiebreak wiring, team sizes
+- `flights.test.ts` / `payouts.test.ts` — flight thresholds and tie splitting (combine + redistribute, largest-remainder cents)
+- `sidegames.test.ts` — skins carryover chains, measured side games
+- `edgecases.test.ts` — boundary inputs: out-of-scale ranks, degenerate standings, empty members, gapped point scales
+
+Every expected value in the suite is derived by hand from the cited rule — the tests never mirror an implementation's output. The suite is fully self-contained: no environment variables, network, or database.
 
 ## Usage
 
@@ -104,8 +120,9 @@ Change procedure: if a formula needs to change, update `src/constants.ts` (and i
 ## Development
 
 ```bash
-npm run test:scoring        # run the verification suite (Vitest)
-npm run test:scoring:watch  # watch mode
+npm run test:scoring           # run the verification suite (Vitest)
+npm run test:scoring:watch     # watch mode
+npm run test:scoring:coverage   # suite + v8 coverage (≥95% lines/branches enforced)
 ```
 
-The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) is built in M3-T003; the package ships with minimal smoke tests per layer so the Vitest wiring is proven from day one. `src/` has its own strict `tsconfig.json` (`extends` the app config) so the package type-checks standalone.
+The verification suite (spec cases + edge cases) enforces ≥95% line and branch coverage of `src/` via the v8 provider (see `vitest.config.mts` thresholds); `npm run test:scoring:coverage` reproduces the full report from one command. `src/` has its own strict `tsconfig.json` (`extends` the app config) so the package type-checks standalone.
