@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:rls": "node scripts/run-rls-tests.mjs"
+    "test:rls": "node scripts/run-rls-tests.mjs",
+    "test:scoring": "vitest run",
+    "test:scoring:watch": "vitest"
   },
   "dependencies": {
     "@supabase/ssr": "^0.7.0",
@@ -36,6 +38,7 @@
     "eslint-config-next": "15.5.28",
     "shadcn": "^4.22.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.12"
   }
 }
