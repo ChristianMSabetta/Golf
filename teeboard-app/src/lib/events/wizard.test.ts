@@ -66,9 +66,9 @@ describe("wizard step registry", () => {
     expect(WIZARD_STEP_IDS).toHaveLength(5);
   });
 
-  it("marks exactly Basics and Format implemented in M4-T003", () => {
+  it("marks exactly Basics, Format, and Players implemented through M4-T005", () => {
     expect(WIZARD_STEPS.filter((step) => step.implemented).map((s) => s.id))
-      .toEqual(["basics", "format"]);
+      .toEqual(["basics", "format", "players"]);
   });
 });
 

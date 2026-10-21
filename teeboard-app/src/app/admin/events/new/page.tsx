@@ -3,6 +3,12 @@ import { requireStaff } from "@/lib/auth/authorization";
 import { getStaffClub } from "@/lib/club/server";
 import { listCourses } from "@/lib/course/server";
 import { getWizardDraft } from "@/lib/events/server";
+import {
+  listEventRoster,
+  listRosterPlayers,
+  type RosterAttachmentRow,
+  type RosterPlayerRow,
+} from "@/lib/players/server";
 import { EventWizard } from "@/components/admin/event-wizard/event-wizard";
 import {
   WIZARD_STEP_IDS,
@@ -61,9 +67,16 @@ export default async function NewEventPage({
   const eventId = first(params.event);
   const initialStep = stepFromParams(first(params.step));
 
-  const [draft, courses] = await Promise.all([
+  const [draft, courses, clubPlayers, attachedPlayers]: [
+    Awaited<ReturnType<typeof getWizardDraft>>,
+    Awaited<ReturnType<typeof listCourses>>,
+    readonly RosterPlayerRow[],
+    readonly RosterAttachmentRow[],
+  ] = await Promise.all([
     eventId ? getWizardDraft(eventId) : Promise.resolve(null),
     listCourses(context.club.id),
+    listRosterPlayers(context.club.id),
+    eventId ? listEventRoster(context.club.id, eventId) : Promise.resolve([]),
   ]);
 
   const canEdit =
@@ -74,6 +87,8 @@ export default async function NewEventPage({
     <EventWizard
       draft={draft}
       courses={courses}
+      clubPlayers={clubPlayers}
+      attachedPlayers={attachedPlayers}
       initialStep={initialStep}
       canEdit={canEdit}
     />

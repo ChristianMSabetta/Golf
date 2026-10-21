@@ -237,6 +237,13 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
   - **Autosave** — every step persists through role-gated server actions (`src/lib/events/actions.ts`): the first valid Basics save creates the `events` draft row; later saves update it and upsert the primary `event_formats` row. Values autosave debounced client-side, so a draft survives a refresh with all entered data. Drafts carry a crypto-random unpublished PIN hash (the Phase 1 columns are NOT NULL; the real PIN is chosen and rotated atomically at publish in M4-T007).
   - **Basics step** — event name, date, course (picked from the club's course editor), 9 or 18 holes (front/back nine for 9), 1–2 rounds, and tee-times vs. shotgun start.
   - **Format step** — the five scoring formats (stroke play, scramble, best ball, Stableford, shamble), team size (1–4, individual formats locked to 1), gross/net/both scoring, handicap allowance percentage, maximum-score rule (WHS net double bogey default for stroke play/best ball), and the USGA card-off tiebreak. **Defaults derive from the WHS allowances in `@/lib/scoring`** (`WHS_DEFAULT_ALLOWANCE_PCT` maps the Rule 5.5 constants — 95% individual, 85% four-ball), so the wizard pre-fills exactly what the scoring engine assumes.
+  - **Players step (`M4-T005`)** — three input paths merged into one confirmed preview before anything saves:
+    - **CSV/Excel import** — paste or upload the spreadsheet's CSV export; columns are detected automatically by the shared parser (`src/lib/players/csv.ts`), so shuffled or renamed headers ("Golfer Name", "HI", "E-mail", "WHS #") map with **no manual column selection** — a typical 120-row file imports as-is.
+    - **Pick from the club database** — searchable, checkbox list of the club's players (reads through the request-bound client so RLS applies).
+    - **Add one by hand** — name + handicap index are enough; email/phone/gender/WHS # optional, validated by the same shared schema.
+    - **Preview & flagging** — every staged row shows in a table before commit; rows failing validation (invalid email, missing name, out-of-range handicap) are flagged individually by source line with actionable messages, and any row can be unchecked to skip it. The same person arriving by two paths resolves to one preview row (keyed on name + email, matching the M4-T002 duplicate detector), and rows already attached to the event are marked.
+    - **Commit** — `saveEventRoster` (`src/lib/players/roster-actions.ts`) re-validates every row, upserts new/updated players into the club player database with the club filter on every write, and attaches each to the event by inserting an `event_players` row with a fresh crypto-random `group_token` (32-char hex, matching the schema check). Attach is **idempotent** — a player already in the event is skipped, so re-running an import never duplicates.
+    - **Detach** — `removeEventPlayer` drops one `event_players` row (the club player row stays); draft events only, enforced server-side.
   - **RLS** — reads run through the request-bound client and writes through the service-role client with the club filter in every `.eq("club_id", …)`; the Phase 1 events policies keep draft events invisible outside the owning club. The wizard's columns arrive in `20260101000300_event_wizard_drafts.sql` (plus the `shamble` enum value); no policy changes were needed.
   - **AI one-sentence setup (`M4-T004`)** — the "Describe it in one sentence" card at the top of the wizard turns a free-text description into pre-fill data: `POST /api/admin/events/ai-parse` makes a single Claude Haiku call (temperature 0, 8-second abort budget) whose output is Zod-validated (`src/lib/ai/schema.ts`) against the wizard's own step enums before anything pre-fills. The adapter (`src/lib/ai/claude-adapter.ts` → the pure call core in `src/lib/ai/messages.ts`) reads only `ANTHROPIC_API_KEY`/`CLAUDE_MODEL` from the environment — no SDK or key ever reaches a component. Safeguards, all server-side: a 30-calls/day/club rate limit derived by counting the current day's `ai_parse_log` rows attributed to the club (the schema is frozen — no rate-limit tables), every call logged to `ai_parse_log` (input, output, validated flag, model, error, latency) in `20260101000400_ai_parse_log_club.sql`, and a graceful fallback that answers "Couldn't read that" with a null prefill on invalid output, timeout, provider failure, or a missing key — leaving the wizard exactly as it was. The **AI never writes to the database** — its only footprint is the log row, and nothing pre-fills until the user saves. Prefilled fields carry an 'Auto-filled' badge until the user touches that field.
 
@@ -338,8 +345,8 @@ src/
                      # paste-from-scorecard parser
       events/         # event manager (M4-T003): list page + new/ wizard —
                      # 5-step framework w/ per-step Zod gating + autosave,
-                     # Basics + Format steps implemented (Players/Groups/
-                     # Extras arrive M4-T005..T007)
+                     # Basics + Format + Players steps implemented
+                     # (Groups/Extras arrive M4-T006..T007)
       players/       # club player database (M4-T002): searchable table with
                      # inline handicap edits, CSV import/export, duplicate merge
       settings/      # club profile settings page (server component + form)
@@ -353,7 +360,9 @@ src/
     admin/           # admin shell: nav, top bar, sign-out, club profile form
                      # course-editor/ — scorecard grid + tees + paste parser (M4-T001)
                      # event-wizard/ — 5-step wizard framework (M4-T003): step rail,
-                     #  Basics + Format forms w/ debounced autosave + Zod gating
+                     #  Basics + Format forms w/ debounced autosave + Zod gating,
+                     #  Players step (M4-T005): CSV/club-picker/manual paths →
+                     #  merged deduped preview w/ per-row flags → idempotent attach
                      # players/ — table w/ search+sort+inline HI edit, CSV panel,
                      # duplicate merge panel (M4-T002)
     auth/            # sign-in + sign-up forms (useActionState server actions)
@@ -402,10 +411,18 @@ src/
                      #  list/search/sort params
       csv.ts         # pure CSV parse (auto header mapping, quoted fields) +
                      #  serializer (canonical export columns)
+      roster.ts      # pure Players-step logic (M4-T005): CSV/picker/manual →
+                     #  staged entries, shared validation, cross-path dedupe,
+                     #  skip-aware commit plan, group-token generation
+                     #  (+ roster.test.ts suite: 120-row shuffled import, flags)
       duplicates.ts   # pure duplicate grouping (name+email) + merge-keeper pick
       server.ts      # RLS-respecting player reads + event aggregates + dup scan
+                     #  + roster loaders (club players, event attachments)
       actions.ts     # updateHandicap / importPlayers (upsert, per-row errors) /
                      #  exportPlayers / mergePlayers (event-history-preserving)
+      roster-actions.ts # saveEventRoster (re-validate, club-filtered upserts,
+                     #  idempotent event attach w/ crypto-random group tokens) /
+                     #  removeEventPlayer — both role-gated + draft-only
       players.test.ts # Vitest suite: handicap + CSV round-trip + duplicate logic
     scorer/
       pin.ts         # server-side scorer PIN verification + 5-strikes/10-min lockout primitive
