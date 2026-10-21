@@ -206,10 +206,16 @@ Supabase Auth handles staff/admin sign-in with **both magic link and password** 
 
 ## Admin App
 
-The authenticated admin app lives under `src/app/admin/` and is **server-side protected end to end**: the admin layout (`src/app/admin/layout.tsx`) authenticates every admin request through `requireStaff()` before any content renders — an unauthenticated or insufficient-role visitor is redirected to `/sign-in` before the page streams. The shell renders the section navigation (Dashboard, Club settings) plus the top bar with the club identity and sign-out.
+The authenticated admin app lives under `src/app/admin/` and is **server-side protected end to end**: the admin layout (`src/app/admin/layout.tsx`) authenticates every admin request through `requireStaff()` before any content renders — an unauthenticated or insufficient-role visitor is redirected to `/sign-in` before the page streams. The shell renders the section navigation (Dashboard, Courses, Club settings) plus the top bar with the club identity and sign-out.
 
 - **Dashboard (`/admin`)** — post-sign-in landing for owners and staff: the signed-in identity and role plus the club summary (name, timezone, contact) read server-side from the database.
 - **Club settings (`/admin/settings`)** — club profile editing (name, logo URL, primary color, timezone) validated by the shared Zod schema (`src/lib/club/schema.ts`) on both client and server. Saves run through the `updateClubProfile` server action, which re-authorizes server-side (owners and head pros only) and persists via the service-role client because `clubs` is read-only under RLS — the tenant root is only ever written by trusted server code. Success revalidates the admin layout so the new branding renders immediately.
+- **Courses (`/admin/courses`, `/admin/courses/new`, `/admin/courses/[id]`) — M4-T001** — the full scorecard editor for club staff:
+  - **Scorecard grid** — par (3–6), stroke index, and yards per hole for 9- or 18-hole courses; a 9-hole course is the front (1–9) or back (10–18) nine, so 9-hole events play from the same course data.
+  - **Validations with field-level errors** — the shared Zod contract (`src/lib/course/schema.ts`) runs identically in the editor form and the `saveCourse` server action: stroke indexes must form a unique permutation of 1–18 (1–9 for 9-hole courses) — duplicates are reported naming both conflicting holes, and missing values are listed explicitly; the par total must be 54–90 for 18 holes and 27–45 for 9 (a live total shows under the grid); slope must be 55–155 and course rating 50–80 per tee (at most one decimal), and two tees of the same gender can't share a name (mirroring the `tee_sets` unique constraint).
+  - **Tees** — per-gender (men's/women's) rating and slope definitions; these are the WHS course-handicap inputs consumed at event time via `@teeboard/scoring`.
+  - **Paste from scorecard** — the parser (`src/lib/course/parse-scorecard.ts`) turns typical printed/scorecard text into grid rows for confirmation: positional columns (`1 4 401 7`), labeled rows (`Hole 1 Par 4 380 yards SI 7` — either label order), tab/comma/pipe separators, 2–4 columns, headers, totals lines, and prose are all tolerated; junk lines are skipped, and the parsed grid still validates through the same schema before anything saves.
+  - **Data path** — reads go through the request-bound client so RLS applies; the `saveCourse`/`deleteCourse` server actions re-authorize server-side (owner/head pro/event manager), enforce the club filter on every service-role write (the service role bypasses RLS, so the tenant guard is in the `.eq("club_id", …)` filters), write the three tables in a deliberate order (course → holes → tee_sets), and refuse to delete a course referenced by any event (`events.course_id` is `on delete restrict`). The editor's display-only par-total math lives in `src/lib/course/totals.ts`, outside the no-scoring-math guard's scope (see [The no-scoring-math guard](#the-no-scoring-math-guard)) — all WHS/USGA scoring math stays in `src/lib/scoring`.
 
 **Club branding** flows from one place: `resolveClubBrand` (`src/lib/brand.ts`) resolves a club's stored settings into a typed `ClubBrand` (name, logo URL, normalized `#RRGGBB` primary color, IANA timezone), falling back to the env-var-backed product defaults for anything unset. No component hardcodes a club name, color, or logo. Staff management (invitations, plan limits) and super-admin surfaces arrive in Phase 3.
 
@@ -305,6 +311,9 @@ src/
     admin/
       layout.tsx     # server-authenticated admin shell (nav + top bar)
       page.tsx       # post-sign-in dashboard (club summary, get-started)
+      courses/       # course manager (M4-T001): list page + new/[id] editor —
+                     # 9/18-hole scorecard grid, tees w/ rating+slope,
+                     # paste-from-scorecard parser
       settings/      # club profile settings page (server component + form)
     auth/callback/   # magic-link code → session exchange (server-side)
     api/waitlist/    # POST route handler validating waitlist signups (Zod)
@@ -332,6 +341,19 @@ src/
       schema.ts      # shared client/server Zod schema for club profile settings
       server.ts      # club row loader via the request client (RLS-scoped reads)
       actions.ts     # updateClubProfile server action (role-gated, service-role write)
+    course/
+      schema.ts      # shared client/server Zod schemas: scorecard grid (par/SI/
+                     #  yards, unique-permutation stroke indexes, 9/18 par totals),
+                     #  tees (rating 50–80, slope 55–155, per-gender)
+      parse-scorecard.ts  # paste-from-scorecard text parser → grid rows
+      totals.ts      # display-only aggregates (live par total) — outside the
+                     #  no-scoring-math guard scope
+      field-errors.ts # Zod issue → field-error lookup flattening
+      server.ts      # RLS-respecting course/holes/tee_sets reads
+      actions.ts     # saveCourse/deleteCourse server actions (role-gated,
+                     #  club-filtered service-role writes, delete blocked when
+                     #  an event references the course)
+      course.test.ts # Vitest suite: schema bounds + parser variants
     scorer/
       pin.ts         # server-side scorer PIN verification + 5-strikes/10-min lockout primitive
       pin-hash.ts    # canonical salted-hash recipe for scorer PINs (shared with event creation)

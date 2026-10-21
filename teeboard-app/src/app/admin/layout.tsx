@@ -25,6 +25,11 @@ export default async function AdminLayout({
 
   if (context) {
     items.push({
+      href: "/admin/courses",
+      label: "Courses",
+      icon: "courses",
+    });
+    items.push({
       href: "/admin/settings",
       label: "Club settings",
       icon: "settings",
