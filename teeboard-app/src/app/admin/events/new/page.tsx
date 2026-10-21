@@ -3,6 +3,7 @@ import { requireStaff } from "@/lib/auth/authorization";
 import { getStaffClub } from "@/lib/club/server";
 import { listCourses } from "@/lib/course/server";
 import {
+  getEventExtras,
   getEventGroups,
   getWizardDraft,
   listGroupedPlayers,
@@ -75,13 +76,14 @@ export default async function NewEventPage({
   const eventId = first(params.event);
   const initialStep = stepFromParams(first(params.step));
 
-  const [draft, courses, clubPlayers, roster, grouped, eventGroups]: [
+  const [draft, courses, clubPlayers, roster, grouped, eventGroups, extras]: [
     Awaited<ReturnType<typeof getWizardDraft>>,
     Awaited<ReturnType<typeof listCourses>>,
     readonly RosterPlayerRow[],
     readonly RosterAttachmentRow[],
     readonly GroupedAttachmentRow[],
     readonly GroupRow[],
+    Awaited<ReturnType<typeof getEventExtras>>,
   ] = await Promise.all([
     eventId ? getWizardDraft(eventId) : Promise.resolve(null),
     listCourses(context.club.id),
@@ -91,6 +93,7 @@ export default async function NewEventPage({
       ? listGroupedPlayers(context.club.id, eventId)
       : Promise.resolve([]),
     eventId ? getEventGroups(eventId) : Promise.resolve([]),
+    eventId ? getEventExtras(context.club.id, eventId) : Promise.resolve(null),
   ]);
 
   const canEdit =
@@ -105,6 +108,7 @@ export default async function NewEventPage({
       attachedPlayers={roster}
       groupedPlayers={grouped}
       eventGroups={eventGroups}
+      eventExtras={extras}
       initialStep={initialStep}
       canEdit={canEdit}
     />

@@ -2,14 +2,14 @@
 
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { WizardStepRail } from "./wizard-steps";
 import { AiPrefillCard } from "./ai-prefill-card";
 import { BasicsStep } from "./basics-step";
 import { FormatStep } from "./format-step";
 import { PlayersStep } from "./players-step";
 import { GroupsStep } from "./groups-step";
+import { ExtrasStep } from "./extras-step";
 import {
   completedSteps,
   furthestStep,
@@ -25,7 +25,7 @@ import type {
   RosterAttachmentRow,
   RosterPlayerRow,
 } from "@/lib/players/server";
-import type { GroupRow, GroupedAttachmentRow } from "@/lib/events/server";
+import type { GroupRow, GroupedAttachmentRow, EventExtras } from "@/lib/events/server";
 import type { AiEventPrefill } from "@/lib/ai/schema";
 
 /**
@@ -33,8 +33,8 @@ import type { AiEventPrefill } from "@/lib/ai/schema";
  * validation gating, free navigation to any visited/unlocked step, and
  * debounced draft autosave through the server actions. The step registry
  * drives the rail; implemented steps render their form — Basics and Format
- * (M4-T003), Players (M4-T005), Groups & teams (M4-T006) — while Extras &
- * publish (M4-T007) lands later in this milestone.
+ * (M4-T003), Players (M4-T005), Groups & teams (M4-T006), and Extras &
+ * publish (M4-T007).
  */
 
 export function EventWizard({
@@ -44,6 +44,7 @@ export function EventWizard({
   attachedPlayers,
   groupedPlayers,
   eventGroups,
+  eventExtras,
   initialStep,
   canEdit,
 }: {
@@ -53,6 +54,7 @@ export function EventWizard({
   attachedPlayers: readonly RosterAttachmentRow[];
   groupedPlayers: readonly GroupedAttachmentRow[];
   eventGroups: readonly GroupRow[];
+  eventExtras: EventExtras | null;
   initialStep: WizardStepId;
   canEdit: boolean;
 }) {
@@ -89,11 +91,13 @@ export function EventWizard({
     basicsValid ? draft : null,
     draft?.formatData ?? null,
     attachedPlayers.length,
+    eventGroups.length,
   );
   const completed = completedSteps(
     basicsValid ? draft : null,
     draft?.formatData ?? null,
     attachedPlayers.length,
+    eventGroups.length,
   );
   const steps = wizardSteps(furthest, completed);
 
@@ -141,9 +145,6 @@ export function EventWizard({
       router.replace(`/admin/events/new?event=${eventId}&step=${next}`);
     }
   }
-
-  const activeStep = steps.find((s) => s.id === step) ?? steps[0]!;
-
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -250,27 +251,36 @@ export function EventWizard({
         )
       ) : null}
 
-      {step !== "basics" &&
-      step !== "format" &&
-      step !== "players" &&
-      step !== "groups" ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Sparkles className="size-4" aria-hidden />
-              {activeStep.label}
-            </CardTitle>
-            <CardDescription>
-              {activeStep.description} This step arrives with the rest of
-              the event milestone — your draft is safe and autosaved.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Everything you&apos;ve entered so far is saved to the event
-            draft — continue with Format, or pick the draft up later from
-            the events list.
-          </CardContent>
-        </Card>
+      {step === "extras" ? (
+        eventId !== null ? (
+          eventExtras !== null ? (
+            <ExtrasStep
+              eventId={eventId}
+              extras={eventExtras}
+              readOnly={!canEdit}
+            />
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle>Publish first needs a field</CardTitle>
+                <CardDescription>
+                  The extras & publish step attaches to a draft with players
+                  and groups — finish the earlier steps and it unlocks here.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          )
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>Save the basics first</CardTitle>
+              <CardDescription>
+                The extras & publish step attaches to a saved draft — finish
+                the basics above and it unlocks here.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        )
       ) : null}
     </div>
   );

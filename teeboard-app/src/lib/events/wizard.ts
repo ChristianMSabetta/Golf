@@ -41,18 +41,20 @@ export type WizardDraftData = {
 /**
  * Maximum step index a draft may navigate to: 0 (Basics only) until Basics
  * validates, 1 (Format) once it does, 2 (Players) once Format validates
- * too, and 3 (Groups) once the event has players attached — there is
- * nothing to pair without a field. Step 4 (Extras) stays gated behind the
- * later milestone tasks.
+ * too, 3 (Groups) once the event has players attached — there is nothing to
+ * pair without a field — and 4 (Extras & publish) once at least one group
+ * is persisted, because publishing mints a token per group.
  */
 export function furthestStep(
   basics: unknown,
   format: unknown,
   playersAttached = 0,
+  groupsPersisted = 0,
 ): number {
   if (validateBasics(basics) === null) return 0;
   if (validateFormat(format) === null) return 1;
-  return playersAttached > 0 ? 3 : 2;
+  if (playersAttached === 0) return 2;
+  return groupsPersisted > 0 ? 4 : 3;
 }
 
 /** Per-step Zod validation → typed result or null. */
@@ -110,11 +112,13 @@ export function completedSteps(
   basics: unknown,
   format: unknown,
   playersAttached = 0,
+  groupsPersisted = 0,
 ): WizardStepId[] {
   const completed: WizardStepId[] = [];
   if (validateBasics(basics) !== null) completed.push("basics");
   if (validateFormat(format) !== null) completed.push("format");
   if (playersAttached > 0) completed.push("players");
+  if (groupsPersisted > 0) completed.push("groups");
   return completed;
 }
 

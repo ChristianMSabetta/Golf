@@ -326,7 +326,7 @@ export const WIZARD_STEPS = [
     id: "extras",
     label: "Extras & publish",
     description: "Flights, side games, payouts, sponsors, and publishing.",
-    implemented: false,
+    implemented: true,
   },
 ] as const;
 

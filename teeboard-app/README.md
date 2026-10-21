@@ -42,6 +42,7 @@ Apply the migrations in order to your Supabase project: open the Supabase dashbo
 4. `20260101000300_event_wizard_drafts.sql` — the event wizard's round-structure columns plus the `shamble` scoring format (M4-T003); no policy changes — the Phase 1 events policies already isolate drafts per club.
 5. `20260101000400_ai_parse_log_club.sql` — the `ai_parse_log` columns attributing every AI call to the club (M4-T004) for the rate limit.
 6. `20260101000500_event_groups_shotgun.sql` — the Groups step's `groups.starting_hole`/`groups.cart_number` columns plus the unique `(event_id, starting_hole)` index (M4-T006); no policy changes — the Phase 1 groups policies already isolate groups per club.
+7. `20260101000600_event_extras_publish.sql` — the Extras & publish step (M4-T007): `events.short_code`/`welcome_message`/`is_public`/`published_at`, the `event_flights` and `event_sponsors` tables (both club-isolated through their event, policies per the Phase 1 conventions), the `side_games` kinds (`closest_to_pin`, `long_drive`, `longest_putt`) plus `hole_value` for skins, and the public-read `sponsor-logos` Storage bucket with club-prefix-scoped write policies.
 
 Row Level Security is enabled on every table with explicit per-role grants (see [Row Level Security](#row-level-security)): `anon` gets nothing except the waitlist insert, `authenticated` (= club staff) is isolated to its own club's rows on every table, and superadmin access is gated by `profiles.is_superadmin`. The only anon write path is the `submit_score` RPC (granted `execute` to `anon`/`authenticated`), a `security definer` function with an empty `search_path` that validates a 32-char crypto-random group token and rate-limits writes to 60 requests/minute per token. Cross-club isolation is proven by the automated pgTAP suites in `supabase/tests/` (see [Testing the database](#testing-the-database)).
 
@@ -150,7 +151,7 @@ Super-admin access is gated by `profiles.is_superadmin` (a dedicated policy per 
 
 | Table | Purpose |
 | --- | --- |
-| `events` | Per-club event with `event_status` (`draft → scheduled → live → completed → archived`) and scorer PIN columns (`scorer_pin_hash`/`scorer_pin_salt`). M4-T003 adds the wizard's round structure: `holes_count` (9/18), `nine_option` (front/back), `rounds` (1–2), `start_type` (`tee_times`/`shotgun`) |
+| `events` | Per-club event with `event_status` (`draft → scheduled → live → completed → archived`) and scorer PIN columns (`scorer_pin_hash`/`scorer_pin_salt`). M4-T003 adds the wizard's round structure: `holes_count` (9/18), `nine_option` (front/back), `rounds` (1–2), `start_type` (`tee_times`/`shotgun`). M4-T007 adds the publish surface: `short_code` (unique 6-char public/TV slug, partial unique index), `welcome_message`, `is_public`, `published_at` |
 | `event_formats` | Formats per event (`stroke_play`, `stableford`, `match_play`, … — `shamble` added in M4-T003); one primary per event via partial unique index. The wizard's Format step settings live on the primary row: `team_size`, `scoring_basis`, `handicap_allowance_pct`, `max_score_rule`, `max_score_fixed_cap`, `tiebreak_method` |
 | `players` | Club-level golfer with `handicap_index`, `whs_number` (WHS/USGA scoring inputs) |
 | `groups` | Playing groups per event (foursomes / tee times) with a unique `(event_id, name)`; M4-T006 adds the wizard Groups step's `starting_hole` (shotgun start, unique per event via partial index) and `cart_number` |
@@ -162,7 +163,9 @@ Super-admin access is gated by `profiles.is_superadmin` (a dedicated policy per 
 | --- | --- |
 | `scores` | Hole-by-hole strokes, unique per `(event_player_id, hole)`; **`client_ts`** (device wall-clock) + `server_ts` for offline conflict resolution — the RPC never lets a stale replay overwrite a newer write |
 | `score_audit` | Append-only audit trail of every score mutation (source: `player_token`/`scorer_pin`/`staff`/`system`) |
-| `side_games`, `side_game_entries` | Optional per-event side games (`skins`, `dots`, `nassau`, `wolf`, `vegas`) and their participants |
+| `side_games`, `side_game_entries` | Optional per-event side games (`skins`, `dots`, `nassau`, `wolf`, `vegas`) and their participants. M4-T007 adds the Extras step's kinds (`closest_to_pin`, `long_drive`, `longest_putt`) and `hole_value` — the skins per-hole value the carryover math in `@teeboard/scoring` consumes |
+| `event_flights` | Handicap-threshold flights per event (M4-T007): `name`, `max_handicap` (null = open top), `position` — the exact shape `@teeboard/scoring`'s `assignFlights` consumes at scoring time |
+| `event_sponsors` | Sponsor logos per event (M4-T007): `name`, `logo_path` (Supabase Storage object under the club-scoped `sponsor-logos` bucket), `position` (0–7, max 8) |
 
 ### Operations & logs
 
@@ -235,7 +238,7 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
 **Club branding** flows from one place: `resolveClubBrand` (`src/lib/brand.ts`) resolves a club's stored settings into a typed `ClubBrand` (name, logo URL, normalized `#RRGGBB` primary color, IANA timezone), falling back to the env-var-backed product defaults for anything unset. No component hardcodes a club name, color, or logo. Staff management (invitations, plan limits) and super-admin surfaces arrive in Phase 3.
 
 - **Event wizard (`/admin/events`, `/admin/events/new`) — M4-T003** — the 5-step event creation framework:
-  - **Step registry & gating** — the wizard's five steps (Basics, Format, Players, Groups & teams, Extras & publish) are declared in one registry (`src/lib/events/schema.ts`); navigation is free to any unlocked or previously visited step, and each step unlocks only once its predecessors validate. Validation is the shared Zod contract running identically client- and server-side, so progression blocks on exactly what the autosave action enforces.
+  - **Step registry & gating** — the wizard's five steps (Basics, Format, Players, Groups & teams, Extras & publish — all implemented through M4-T007) are declared in one registry (`src/lib/events/schema.ts`); navigation is free to any unlocked or previously visited step, and each step unlocks only once its predecessors validate (Extras additionally requires at least one saved group, because publishing mints a token per group). Validation is the shared Zod contract running identically client- and server-side, so progression blocks on exactly what the autosave action enforces.
   - **Autosave** — every step persists through role-gated server actions (`src/lib/events/actions.ts`): the first valid Basics save creates the `events` draft row; later saves update it and upsert the primary `event_formats` row. Values autosave debounced client-side, so a draft survives a refresh with all entered data. Drafts carry a crypto-random unpublished PIN hash (the Phase 1 columns are NOT NULL; the real PIN is chosen and rotated atomically at publish in M4-T007).
   - **Basics step** — event name, date, course (picked from the club's course editor), 9 or 18 holes (front/back nine for 9), 1–2 rounds, and tee-times vs. shotgun start.
   - **Format step** — the five scoring formats (stroke play, scramble, best ball, Stableford, shamble), team size (1–4, individual formats locked to 1), gross/net/both scoring, handicap allowance percentage, maximum-score rule (WHS net double bogey default for stroke play/best ball), and the USGA card-off tiebreak. **Defaults derive from the WHS allowances in `@/lib/scoring`** (`WHS_DEFAULT_ALLOWANCE_PCT` maps the Rule 5.5 constants — 95% individual, 85% four-ball), so the wizard pre-fills exactly what the scoring engine assumes.
@@ -252,6 +255,13 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
     - **Shotgun holes** — when the Basics step chose a shotgun start, each group gets a unique starting hole from the event's played holes (1–18, or just the front/back nine on a 9-hole event), enforced by the unique `(event_id, starting_hole)` index from `20260101000500_event_groups_shotgun.sql` plus server-side validation. More groups than holes surface a warning rather than a silent overlap; tee-times events hide the field.
     - **Cart numbers** — an editable 1–99 cart number per group, persisted on the `groups` row.
     - **Persistence** — `saveGroupsStep` clears the previous groups first (their names would collide with the planned ones — `groups` is unique per event + name — and the deletion nulls every `event_players.group_id`), then inserts the planned groups and re-points the members. The persisted shape always matches the editor exactly; a mid-save failure leaves the event consistent (everyone unassigned) and retryable. Role-gated (`owner`/`head_pro`/`event_manager`), club-filtered, draft-only, and the step's numbers must agree with the event's Basics (a stale tab cannot save an old plan onto changed basics).
+  - **Extras & publish step (`M4-T007`)** — flights, side games, payouts, sponsors, the welcome message, and the publish transition:
+    - **Flights** — a small ladder editor (add/remove, A/B/C labels via `flightLabel`): rising `max_handicap` thresholds with the last flight open (`null`) as the top. The state is the exact shape `@teeboard/scoring`'s `assignFlights` consumes; no assignment math lives in the step.
+    - **Side games** — checkboxes for the four games (skins, closest to pin, long drive, longest putt) with a per-hole value on skins; validation demands a value on enabled skins and none elsewhere, and the save replaces only the step's four `side_games` kinds (rows of any other kind stay untouched).
+    - **Payouts** — the standard presets (50/30/20, 60/30/10, 40/30/20/10) with a purse; the presets are share data from `@teeboard/scoring`'s `PAYOUT_PRESET_50_30_20` and all tie-splitting math stays in the package.
+    - **Sponsor logos** — up to 8 logos per event (PNG/JPEG/WebP/SVG, ≤ 2 MB) uploaded through `uploadEventSponsor`, into the public-read `sponsor-logos` Storage bucket at `<club_id>/<event_id>/<uuid>.<ext>` — the Storage policies scope writes by that club prefix, so club A can never touch club B's objects. Logos render in the step from the bucket's public CDN URL.
+    - **Welcome message & visibility** — a ≤ 2000-character message for the player surfaces and the `is_public` toggle that gates the public leaderboard/TV URLs for strangers.
+    - **Publish** — `publishEvent` (`src/lib/events/extras-actions.ts`) transitions the draft in **one atomic update**: `status → scheduled`, a unique 6-char short code (collision-checked, ambiguous glyphs excluded), the **rotated salted 4-digit scorer PIN** (replacing the placeholder hash the draft carried), `published_at`, and `is_public`. It then re-mints every attached player's `group_token` — a fresh 32-char crypto-random hex per group member (`node:crypto`, never `Math.random`). The clear PIN is returned exactly once (it is unrecoverable from the salted hash) and presented with **copyable shareable links**: public leaderboard (`/e/<code>`), TV (`/e/<code>/tv`), and scorer entry (`/score` + the PIN). Publishing requires players and at least one saved group; a failure leaves the event a draft with its old credentials, retryable.
   - **RLS** — reads run through the request-bound client and writes through the service-role client with the club filter in every `.eq("club_id", …)`; the Phase 1 events policies keep draft events invisible outside the owning club. The wizard's columns arrive in `20260101000300_event_wizard_drafts.sql` (plus the `shamble` enum value) and the Groups step's in `20260101000500_event_groups_shotgun.sql`; no policy changes were needed.
   - **AI one-sentence setup (`M4-T004`)** — the "Describe it in one sentence" card at the top of the wizard turns a free-text description into pre-fill data: `POST /api/admin/events/ai-parse` makes a single Claude Haiku call (temperature 0, 8-second abort budget) whose output is Zod-validated (`src/lib/ai/schema.ts`) against the wizard's own step enums before anything pre-fills. The adapter (`src/lib/ai/claude-adapter.ts` → the pure call core in `src/lib/ai/messages.ts`) reads only `ANTHROPIC_API_KEY`/`CLAUDE_MODEL` from the environment — no SDK or key ever reaches a component. Safeguards, all server-side: a 30-calls/day/club rate limit derived by counting the current day's `ai_parse_log` rows attributed to the club (the schema is frozen — no rate-limit tables), every call logged to `ai_parse_log` (input, output, validated flag, model, error, latency) in `20260101000400_ai_parse_log_club.sql`, and a graceful fallback that answers "Couldn't read that" with a null prefill on invalid output, timeout, provider failure, or a missing key — leaving the wizard exactly as it was. The **AI never writes to the database** — its only footprint is the log row, and nothing pre-fills until the user saves. Prefilled fields carry an 'Auto-filled' badge until the user touches that field.
 
@@ -372,9 +382,13 @@ src/
                      #  Players step (M4-T005): CSV/club-picker/manual paths →
                      #  merged deduped preview w/ per-row flags → idempotent attach,
                      #  Groups step (M4-T006): pairing strategies + native HTML5
-                     #  drag-and-drop + shotgun holes + cart numbers
+                     #  drag-and-drop + shotgun holes + cart numbers,
+                     #  Extras & publish step (M4-T007): flights + side games +
+                     #  payout presets + sponsor uploads (club-scoped Storage) +
+                     #  welcome message + publish → short code, per-group tokens,
+                     #  4-digit scorer PIN, copyable shareable links
                      # players/ — table w/ search+sort+inline HI edit, CSV panel,
-                     # duplicate merge panel (M4-T002)
+                     #  duplicate merge panel (M4-T002)
     auth/            # sign-in + sign-up forms (useActionState server actions)
     landing/         # landing sections: header, hero, demo video slot, pricing,
                      # Cal.com booking section + inline embed, waitlist, footer
@@ -424,6 +438,18 @@ src/
                      #  clear previous groups (unique names + nulls members),
                      #  insert planned groups, re-point event_players.group_id;
                      #  validated server-side
+      extras.ts       # pure Extras-step logic (M4-T007): flights, side games
+                     #  (skins value), payout presets (from @teeboard/scoring
+                     #  data), sponsors, welcome message, row ↔ state mappers
+                     #  (+ extras.test.ts suite)
+      publish.ts     # pure publish logic (M4-T007): short-code alphabet +
+                     #  generators (byte-source injected), 4-digit scorer PIN,
+                     #  32-hex group token, shareable link builders
+                     #  (+ publish.test.ts suite)
+      extras-actions.ts # saveExtrasStep/uploadEventSponsor/removeEventSponsor/
+                     #  publishEvent server actions (role-gated, club-filtered,
+                     #  draft-only; publish mints short code + rotated salted
+                     #  PIN + per-group tokens atomically)
     players/
       schema.ts      # shared client/server Zod schemas: player rows, inline
                      #  handicap edits (−5…54, one decimal), CSV import rows,
