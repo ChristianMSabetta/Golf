@@ -2,17 +2,18 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Settings } from "lucide-react";
+import { Flag, LayoutDashboard, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type AdminNavItem = {
   readonly href: string;
   readonly label: string;
-  readonly icon: "dashboard" | "settings";
+  readonly icon: "dashboard" | "courses" | "settings";
 };
 
 const ICONS = {
   dashboard: LayoutDashboard,
+  courses: Flag,
   settings: Settings,
 } as const;
 
