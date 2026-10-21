@@ -98,6 +98,13 @@ All configuration is environment-driven; nothing is hardcoded in components.
 | --- | --- | --- |
 | `NEXT_PUBLIC_CALCOM_EVENT_LINK` | client + server | Cal.com event-type link for the embedded 15-minute booking widget (full URL or `USERNAME/EVENT-TYPE` path). When unset or unusable, the booking section is hidden instead of rendering a broken embed |
 
+### Claude (AI event setup)
+
+| Variable | Scope | Description |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | server | Anthropic API key powering the one-sentence AI event setup (M4-T004): a single Claude Haiku call (temperature 0) whose output is Zod-validated before it pre-fills the wizard. Required for the AI pre-fill; without it the card answers the graceful fallback |
+| `CLAUDE_MODEL` | server | Model override for the AI event-setup adapter; defaults to Claude Haiku |
+
 ### Testing
 
 | Variable | Scope | Description |
@@ -231,6 +238,7 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
   - **Basics step** — event name, date, course (picked from the club's course editor), 9 or 18 holes (front/back nine for 9), 1–2 rounds, and tee-times vs. shotgun start.
   - **Format step** — the five scoring formats (stroke play, scramble, best ball, Stableford, shamble), team size (1–4, individual formats locked to 1), gross/net/both scoring, handicap allowance percentage, maximum-score rule (WHS net double bogey default for stroke play/best ball), and the USGA card-off tiebreak. **Defaults derive from the WHS allowances in `@/lib/scoring`** (`WHS_DEFAULT_ALLOWANCE_PCT` maps the Rule 5.5 constants — 95% individual, 85% four-ball), so the wizard pre-fills exactly what the scoring engine assumes.
   - **RLS** — reads run through the request-bound client and writes through the service-role client with the club filter in every `.eq("club_id", …)`; the Phase 1 events policies keep draft events invisible outside the owning club. The wizard's columns arrive in `20260101000300_event_wizard_drafts.sql` (plus the `shamble` enum value); no policy changes were needed.
+  - **AI one-sentence setup (`M4-T004`)** — the "Describe it in one sentence" card at the top of the wizard turns a free-text description into pre-fill data: `POST /api/admin/events/ai-parse` makes a single Claude Haiku call (temperature 0, 8-second abort budget) whose output is Zod-validated (`src/lib/ai/schema.ts`) against the wizard's own step enums before anything pre-fills. The adapter (`src/lib/ai/claude-adapter.ts` → the pure call core in `src/lib/ai/messages.ts`) reads only `ANTHROPIC_API_KEY`/`CLAUDE_MODEL` from the environment — no SDK or key ever reaches a component. Safeguards, all server-side: a 30-calls/day/club rate limit derived by counting the current day's `ai_parse_log` rows attributed to the club (the schema is frozen — no rate-limit tables), every call logged to `ai_parse_log` (input, output, validated flag, model, error, latency) in `20260101000400_ai_parse_log_club.sql`, and a graceful fallback that answers "Couldn't read that" with a null prefill on invalid output, timeout, provider failure, or a missing key — leaving the wizard exactly as it was. The **AI never writes to the database** — its only footprint is the log row, and nothing pre-fills until the user saves. Prefilled fields carry an 'Auto-filled' badge until the user touches that field.
 
 ## Running the Project
 
@@ -254,6 +262,7 @@ The pgTAP suites under `supabase/tests/` prove the tenant-isolation guarantees a
 - `rls_isolation.test.sql` — seeds two complete clubs (A and B) with owners, courses, events, players, groups, scores, side games, leagues, logs, and PIN state, then asserts on **every table** that club A's staff can read/write only club A's rows, that cross-club reads return nothing, that cross-club writes are denied or match zero rows (with the target row proven intact afterward), that the audit trails are append-only, and that superadmin reach is gated on `profiles.is_superadmin`.
 - `submit_score_rpc.test.sql` — token validity (unknown, malformed, non-hex), bounds, revocation and event-completion invalidation, `client_ts` conflict resolution (a stale replay never overwrites a newer score), and the 60 req/min per-token rate limit surfacing as `PT429` (HTTP 429), including per-token budget isolation.
 - `scorer_pin_lockout.test.sql` — the scorer PIN lockout state machine on `pin_attempts`: per-`(event_id, identifier)` rows, upsert-on-conflict semantics, the 5-failure lockout timestamp, success-driven resets, and the grants matrix (staff cannot insert lockout state; `anon` cannot read any).
+- `ai_parse_log_club.test.sql` — the M4-T004 club attribution on `ai_parse_log`: the nullable `club_id` column and its `(club_id, created_at desc)` rate-limit index, legacy null-attributed rows staying valid, and staff reading only their own club's rows through the Phase 1 policy set.
 
 Run them against your configured Supabase instance:
 

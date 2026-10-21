@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { WizardStepRail } from "./wizard-steps";
+import { AiPrefillCard } from "./ai-prefill-card";
 import { BasicsStep } from "./basics-step";
 import { FormatStep } from "./format-step";
 import {
@@ -18,6 +19,7 @@ import {
   type WizardStepId,
 } from "@/lib/events/schema";
 import type { CourseSummary } from "@/lib/course/server";
+import type { AiEventPrefill } from "@/lib/ai/schema";
 
 /**
  * The event creation wizard (M4-T003): the 5-step framework with per-step
@@ -52,6 +54,15 @@ export function EventWizard({
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
   /**
+   * AI pre-fill state (M4-T004): `prefill` holds the validated AI
+   * suggestion; `aiTouched` tracks which fields the user has edited since
+   * the last pre-fill so badges disappear per field once touched. The AI
+   * never writes — only these local states change until the user saves.
+   */
+  const [prefill, setPrefill] = useState<AiEventPrefill | null>(null);
+  const [aiTouched, setAiTouched] = useState<ReadonlySet<string>>(new Set());
+
+  /**
    * Validation-driven gating: a step is reachable when its predecessors'
    * data validates. `basics` validates from the draft (or is step 0), so
    * `format` unlocks only once Basics parses clean.
@@ -79,6 +90,22 @@ export function EventWizard({
 
   const onFormatSaved = useCallback((at: string) => {
     setSavedAt(at);
+  }, []);
+
+  /** A validated AI suggestion arrives: apply it and reset the badge set. */
+  const onPrefill = useCallback((next: AiEventPrefill) => {
+    setPrefill(next);
+    setAiTouched(new Set());
+  }, []);
+
+  /** Mark one field as user-edited — its Auto-filled badge disappears. */
+  const markTouched = useCallback((field: string) => {
+    setAiTouched((current) => {
+      if (current.has(field)) return current;
+      const next = new Set(current);
+      next.add(field);
+      return next;
+    });
   }, []);
 
   /** Free navigation to any unlocked or previously visited step. */
@@ -123,6 +150,8 @@ export function EventWizard({
 
       <WizardStepRail steps={steps} active={step} onNavigate={navigate} />
 
+      <AiPrefillCard onPrefill={onPrefill} disabled={!canEdit} />
+
       {step === "basics" ? (
         <BasicsStep
           draft={draft}
@@ -130,6 +159,9 @@ export function EventWizard({
           eventId={eventId}
           onSaved={onBasicsSaved}
           readOnly={!canEdit}
+          prefill={prefill}
+          touched={markTouched}
+          aiTouchedFields={aiTouched}
         />
       ) : null}
 
@@ -140,6 +172,9 @@ export function EventWizard({
             eventId={eventId}
             onSaved={onFormatSaved}
             readOnly={!canEdit}
+            prefill={prefill}
+            touched={markTouched}
+            aiTouchedFields={aiTouched}
           />
         ) : (
           <Card>

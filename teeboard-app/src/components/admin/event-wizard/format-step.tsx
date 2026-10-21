@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AutofillBadge } from "./autofill-badge";
 import { FieldError } from "./field-error";
 import { saveFormatStep } from "@/lib/events/actions";
 import {
@@ -21,12 +22,19 @@ import {
   type WizardFormat,
 } from "@/lib/events/schema";
 import type { FormatStep, WizardDraftData } from "@/lib/events/wizard";
+import { prefillAwareFormat } from "@/lib/events/prefill";
+import type { AiEventPrefill } from "@/lib/ai/schema";
 
 /**
  * Wizard Format step (M4-T003): the five scoring formats, team size,
  * gross/net/both scoring, handicap allowance percentage, maximum-score
  * rule, and tiebreak method. Defaults derive from the WHS allowances in
  * @teeboard/scoring via formatDefaults(); valid values autosave debounced.
+ *
+ * M4-T004: the AI pre-fill injects `prefill`; prefilled fields carry the
+ * 'Auto-filled' badge until the user touches them (`touched` reports
+ * per-field edits to the wizard). A prefilled format switches the WHS
+ * defaults to that format so untouched fields stay valid.
  */
 
 const AUTOSAVE_DEBOUNCE_MS = 1500;
@@ -46,33 +54,56 @@ export function FormatStep({
   eventId,
   onSaved,
   readOnly = false,
+  prefill = null,
+  touched = () => {},
+  aiTouchedFields = new Set(),
 }: {
   draft: WizardDraftData | null;
   eventId: string;
   onSaved: (savedAt: string) => void;
   readOnly?: boolean;
+  prefill?: AiEventPrefill | null;
+  touched?: (field: string) => void;
+  aiTouchedFields?: ReadonlySet<string>;
 }) {
-  const initial: FormatStep =
-    draft?.formatData != null
-      ? draft.formatData
-      : {
-          ...formatDefaults("stroke_play"),
-          maxScoreFixedCap: null,
-        };
-
-  const [format, setFormat] = useState<WizardFormat>(initial.format);
-  const [teamSize, setTeamSize] = useState<number>(initial.teamSize);
-  const [scoringBasis, setScoringBasis] = useState(initial.scoringBasis);
+  const [format, setFormat] = useState<WizardFormat>(
+    prefillAwareFormat(draft, prefill).format,
+  );
+  const [teamSize, setTeamSize] = useState<number>(
+    prefillAwareFormat(draft, prefill).teamSize,
+  );
+  const resolved = prefillAwareFormat(draft, prefill);
+  const [scoringBasis, setScoringBasis] = useState(resolved.scoringBasis);
   const [allowancePct, setAllowancePct] = useState(
-    initial.handicapAllowancePct === null
+    resolved.handicapAllowancePct === null
       ? ""
-      : String(initial.handicapAllowancePct),
+      : String(resolved.handicapAllowancePct),
   );
-  const [maxScoreRule, setMaxScoreRule] = useState(initial.maxScoreRule);
+  const [maxScoreRule, setMaxScoreRule] = useState(resolved.maxScoreRule);
   const [fixedCap, setFixedCap] = useState(
-    initial.maxScoreFixedCap === null ? "" : String(initial.maxScoreFixedCap),
+    resolved.maxScoreFixedCap === null ? "" : String(resolved.maxScoreFixedCap),
   );
-  const [tiebreakMethod, setTiebreakMethod] = useState(initial.tiebreakMethod);
+  const [tiebreakMethod, setTiebreakMethod] = useState(resolved.tiebreakMethod);
+
+  // Re-resolve every field whenever a fresh AI pre-fill arrives.
+  useEffect(() => {
+    if (prefill === null) return;
+    const fresh = prefillAwareFormat(draft, prefill);
+    setFormat(fresh.format);
+    setTeamSize(fresh.teamSize);
+    setScoringBasis(fresh.scoringBasis);
+    setAllowancePct(
+      fresh.handicapAllowancePct === null
+        ? ""
+        : String(fresh.handicapAllowancePct),
+    );
+    setMaxScoreRule(fresh.maxScoreRule);
+    setFixedCap(
+      fresh.maxScoreFixedCap === null ? "" : String(fresh.maxScoreFixedCap),
+    );
+    setTiebreakMethod(fresh.tiebreakMethod);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill]);
 
   const [clientErrors, setClientErrors] = useState<Record<string, string>>({});
   const [state, formAction, pending] = useActionState<
@@ -143,6 +174,12 @@ export function FormatStep({
     return clientErrors[key] ?? errors[key];
   }
 
+  /** 'Auto-filled' until the user edits the field (per-field badges). */
+  function badge(field: string): boolean {
+    const value = prefill?.[field as keyof AiEventPrefill];
+    return value !== undefined && !aiTouchedFields.has(field);
+  }
+
   /** Switching formats resets every format-derived field to the WHS defaults. */
   function changeFormat(next: WizardFormat) {
     setFormat(next);
@@ -192,7 +229,10 @@ export function FormatStep({
         </CardHeader>
         <CardContent className="grid gap-5">
           <div className="grid gap-2">
-            <Label>Scoring format</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label>Scoring format</Label>
+              <AutofillBadge show={badge("format")} />
+            </div>
             <div className="grid gap-2 sm:grid-cols-2">
               {WIZARD_FORMATS.map((option) => (
                 <label
@@ -204,7 +244,10 @@ export function FormatStep({
                     name="wizard-format"
                     value={option}
                     checked={format === option}
-                    onChange={() => changeFormat(option)}
+                    onChange={() => {
+                      changeFormat(option);
+                      touched("format");
+                    }}
                     disabled={readOnly}
                     className="accent-[#0F5132]"
                   />
@@ -217,11 +260,17 @@ export function FormatStep({
 
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="grid gap-2">
-              <Label htmlFor="event-team-size">Team size</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-team-size">Team size</Label>
+                <AutofillBadge show={badge("teamSize")} />
+              </div>
               <select
                 id="event-team-size"
                 value={teamSize}
-                onChange={(e) => setTeamSize(Number(e.target.value))}
+                onChange={(e) => {
+                  setTeamSize(Number(e.target.value));
+                  touched("teamSize");
+                }}
                 disabled={readOnly}
                 className={STRING_SELECT_CLASS}
               >
@@ -240,15 +289,19 @@ export function FormatStep({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="event-basis">Scoring</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-basis">Scoring</Label>
+                <AutofillBadge show={badge("scoringBasis")} />
+              </div>
               <select
                 id="event-basis"
                 value={scoringBasis}
-                onChange={(e) =>
+                onChange={(e) => {
                   setScoringBasis(
                     e.target.value as (typeof SCORING_BASES)[number],
-                  )
-                }
+                  );
+                  touched("scoringBasis");
+                }}
                 disabled={readOnly}
                 className={STRING_SELECT_CLASS}
               >
@@ -266,12 +319,20 @@ export function FormatStep({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="event-allowance">Handicap allowance (%)</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-allowance">Handicap allowance (%)</Label>
+                <AutofillBadge
+                  show={badge("handicapAllowancePct")}
+                />
+              </div>
               <Input
                 id="event-allowance"
                 inputMode="decimal"
                 value={allowancePct}
-                onChange={(e) => setAllowancePct(e.target.value)}
+                onChange={(e) => {
+                  setAllowancePct(e.target.value);
+                  touched("handicapAllowancePct");
+                }}
                 placeholder={String(defaults.handicapAllowancePct)}
                 aria-invalid={Boolean(err("handicapAllowancePct"))}
                 disabled={readOnly}
@@ -284,15 +345,19 @@ export function FormatStep({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="event-max-rule">Maximum score</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-max-rule">Maximum score</Label>
+                <AutofillBadge show={badge("maxScoreRule")} />
+              </div>
               <select
                 id="event-max-rule"
                 value={maxScoreRule}
-                onChange={(e) =>
+                onChange={(e) => {
                   setMaxScoreRule(
                     e.target.value as (typeof MAX_SCORE_RULES)[number],
-                  )
-                }
+                  );
+                  touched("maxScoreRule");
+                }}
                 disabled={readOnly}
                 className={STRING_SELECT_CLASS}
               >
@@ -311,12 +376,20 @@ export function FormatStep({
 
             {maxScoreRule === "fixed" ? (
               <div className="grid gap-2">
-                <Label htmlFor="event-fixed-cap">Fixed cap (strokes)</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="event-fixed-cap">Fixed cap (strokes)</Label>
+                  <AutofillBadge
+                    show={badge("maxScoreFixedCap")}
+                  />
+                </div>
                 <Input
                   id="event-fixed-cap"
                   inputMode="numeric"
                   value={fixedCap}
-                  onChange={(e) => setFixedCap(e.target.value)}
+                  onChange={(e) => {
+                    setFixedCap(e.target.value);
+                    touched("maxScoreFixedCap");
+                  }}
                   placeholder="8"
                   aria-invalid={Boolean(err("maxScoreFixedCap"))}
                   disabled={readOnly}
@@ -327,15 +400,19 @@ export function FormatStep({
             ) : null}
 
             <div className="grid gap-2">
-              <Label htmlFor="event-tiebreak">Tiebreak</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-tiebreak">Tiebreak</Label>
+                <AutofillBadge show={badge("tiebreakMethod")} />
+              </div>
               <select
                 id="event-tiebreak"
                 value={tiebreakMethod}
-                onChange={(e) =>
+                onChange={(e) => {
                   setTiebreakMethod(
                     e.target.value as (typeof TIEBREAK_METHODS)[number],
-                  )
-                }
+                  );
+                  touched("tiebreakMethod");
+                }}
                 disabled={readOnly}
                 className={STRING_SELECT_CLASS}
               >

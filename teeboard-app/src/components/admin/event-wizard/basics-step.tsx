@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AutofillBadge } from "./autofill-badge";
 import { FieldError } from "./field-error";
 import { saveBasicsStep } from "@/lib/events/actions";
 import {
@@ -18,12 +19,18 @@ import {
 } from "@/lib/events/schema";
 import type { CourseSummary } from "@/lib/course/server";
 import type { WizardDraftData } from "@/lib/events/wizard";
+import { prefillAwareBasics, type BasicsFieldState } from "@/lib/events/prefill";
+import type { AiEventPrefill } from "@/lib/ai/schema";
 
 /**
  * Wizard Basics step (M4-T003): name, date, course (from the club's course
  * editor), 9 or 18 holes, 1–2 rounds, and tee-times vs. shotgun start. The
  * same Zod schema gates client-side progression and the autosave action;
  * valid values autosave (debounced) so the draft survives a refresh.
+ *
+ * M4-T004: the AI pre-fill card injects `prefill`; prefilled fields carry
+ * the 'Auto-filled' badge until the user touches them (touched fields drop
+ * the badge — `onTouch` reports per-field edits to the wizard).
  */
 
 const AUTOSAVE_DEBOUNCE_MS = 1500;
@@ -40,26 +47,50 @@ export function BasicsStep({
   eventId,
   onSaved,
   readOnly = false,
+  prefill = null,
+  touched = () => {},
+  aiTouchedFields = new Set(),
 }: {
   draft: WizardDraftData | null;
   courses: readonly CourseSummary[];
   eventId: string | null;
   onSaved: (eventId: string, savedAt: string) => void;
   readOnly?: boolean;
+  prefill?: AiEventPrefill | null;
+  touched?: (field: string) => void;
+  aiTouchedFields?: ReadonlySet<string>;
 }) {
-  const [name, setName] = useState(draft?.name ?? "");
-  const [startDate, setStartDate] = useState(draft?.startDate ?? todayIso());
-  const [courseId, setCourseId] = useState(
-    draft?.courseId ?? (courses[0]?.id ?? ""),
+  const initial: BasicsFieldState = prefillAwareBasics(
+    draft,
+    prefill,
+    todayIso(),
+    courses[0]?.id ?? "",
   );
-  const [holesCount, setHolesCount] = useState<number>(draft?.holesCount ?? 18);
+
+  const [name, setName] = useState(initial.name);
+  const [startDate, setStartDate] = useState(initial.startDate);
+  const [courseId, setCourseId] = useState(initial.courseId);
+  const [holesCount, setHolesCount] = useState<number>(initial.holesCount);
   const [nineOption, setNineOption] = useState<
     (typeof EVENT_NINE_OPTIONS)[number]
-  >(draft?.nineOption ?? "front");
-  const [rounds, setRounds] = useState<number>(draft?.rounds ?? 1);
+  >(initial.nineOption);
+  const [rounds, setRounds] = useState<number>(initial.rounds);
   const [startType, setStartType] = useState<
     (typeof EVENT_START_TYPES)[number]
-  >(draft?.startType ?? "tee_times");
+  >(initial.startType);
+
+  // Re-resolve the state whenever a fresh AI pre-fill arrives.
+  useEffect(() => {
+    if (prefill === null) return;
+    setName(initial.name);
+    setStartDate(initial.startDate);
+    setCourseId(initial.courseId);
+    setHolesCount(initial.holesCount);
+    setNineOption(initial.nineOption);
+    setRounds(initial.rounds);
+    setStartType(initial.startType);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill]);
 
   const [clientErrors, setClientErrors] = useState<Record<string, string>>({});
   const [state, formAction, pending] = useActionState<
@@ -125,6 +156,12 @@ export function BasicsStep({
     return clientErrors[key] ?? errors[key];
   }
 
+  /** 'Auto-filled' until the user edits the field (per-field badges). */
+  function badge(field: string): boolean {
+    const value = prefill?.[field as keyof AiEventPrefill];
+    return value !== undefined && !aiTouchedFields.has(field);
+  }
+
   function submit(event: React.FormEvent<HTMLFormElement>) {
     const fields = validate();
     if (Object.keys(fields).length > 0) {
@@ -161,11 +198,17 @@ export function BasicsStep({
         </CardHeader>
         <CardContent className="grid gap-5">
           <div className="grid gap-2">
-            <Label htmlFor="event-name">Event name</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="event-name">Event name</Label>
+              <AutofillBadge show={badge("name")} />
+            </div>
             <Input
               id="event-name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                touched("name");
+              }}
               placeholder="Saturday Scramble"
               aria-invalid={Boolean(err("name"))}
               disabled={readOnly}
@@ -176,12 +219,18 @@ export function BasicsStep({
 
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="grid gap-2">
-              <Label htmlFor="event-date">Date</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-date">Date</Label>
+                <AutofillBadge show={badge("startDate")} />
+              </div>
               <Input
                 id="event-date"
                 type="date"
                 value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+                onChange={(e) => {
+                  setStartDate(e.target.value);
+                  touched("startDate");
+                }}
                 aria-invalid={Boolean(err("startDate"))}
                 disabled={readOnly}
                 required
@@ -194,7 +243,10 @@ export function BasicsStep({
               <select
                 id="event-course"
                 value={courseId}
-                onChange={(e) => setCourseId(e.target.value)}
+                onChange={(e) => {
+                  setCourseId(e.target.value);
+                  touched("courseId");
+                }}
                 aria-invalid={Boolean(err("courseId"))}
                 disabled={readOnly || courses.length === 0}
                 className={STRING_SELECT_CLASS}
@@ -216,7 +268,10 @@ export function BasicsStep({
 
           <fieldset className="grid gap-5 sm:grid-cols-2" disabled={readOnly}>
             <div className="grid gap-2">
-              <Label>Holes</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label>Holes</Label>
+                <AutofillBadge show={badge("holesCount")} />
+              </div>
               <div className="flex gap-2">
                 {EVENT_HOLES_COUNTS.map((count) => (
                   <label
@@ -228,7 +283,10 @@ export function BasicsStep({
                       name="holes-count"
                       value={count}
                       checked={holesCount === count}
-                      onChange={() => setHolesCount(count)}
+                      onChange={() => {
+                        setHolesCount(count);
+                        touched("holesCount");
+                      }}
                       className="accent-[#0F5132]"
                     />
                     {count} holes
@@ -238,15 +296,19 @@ export function BasicsStep({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="event-nine">Nine played</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-nine">Nine played</Label>
+                <AutofillBadge show={badge("nineOption")} />
+              </div>
               <select
                 id="event-nine"
                 value={nineOption}
-                onChange={(e) =>
+                onChange={(e) => {
                   setNineOption(
                     e.target.value as (typeof EVENT_NINE_OPTIONS)[number],
-                  )
-                }
+                  );
+                  touched("nineOption");
+                }}
                 disabled={readOnly || holesCount !== 9}
                 className={STRING_SELECT_CLASS}
               >
@@ -259,11 +321,17 @@ export function BasicsStep({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="event-rounds">Rounds</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-rounds">Rounds</Label>
+                <AutofillBadge show={badge("rounds")} />
+              </div>
               <select
                 id="event-rounds"
                 value={rounds}
-                onChange={(e) => setRounds(Number(e.target.value))}
+                onChange={(e) => {
+                  setRounds(Number(e.target.value));
+                  touched("rounds");
+                }}
                 disabled={readOnly}
                 className={STRING_SELECT_CLASS}
               >
@@ -276,15 +344,19 @@ export function BasicsStep({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="event-start">Start</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="event-start">Start</Label>
+                <AutofillBadge show={badge("startType")} />
+              </div>
               <select
                 id="event-start"
                 value={startType}
-                onChange={(e) =>
+                onChange={(e) => {
                   setStartType(
                     e.target.value as (typeof EVENT_START_TYPES)[number],
-                  )
-                }
+                  );
+                  touched("startType");
+                }}
                 disabled={readOnly}
                 className={STRING_SELECT_CLASS}
               >
