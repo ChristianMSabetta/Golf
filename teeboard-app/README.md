@@ -221,6 +221,7 @@ npm run build      # production build
 npm run start      # serve the production build
 npm run lint       # ESLint
 npm run test:rls   # pgTAP RLS/isolation suites (see Testing the database)
+npm run test:scoring   # lib/scoring Vitest suite (see The scoring package)
 ```
 
 ## Testing the database
@@ -245,6 +246,10 @@ npm run test:rls       # uses POSTGRES_URL (see Environment Variables)
 ```
 
 The runner creates a throwaway scratch database, applies `scripts/rls-bootstrap.sql` (an idempotent no-op on Supabase: it only stubs the `anon`/`authenticated`/`service_role` roles, the `auth.users` table, and `auth.uid()`, which the platform provides) plus all migrations in filename order, runs the suites, and drops the scratch database again — nothing is left behind.
+
+## The scoring package
+
+All WHS/USGA scoring mathematics lives in the pure TypeScript package at `src/lib/scoring/` — no I/O, no environment reads, no framework, database, or browser APIs; every input (course data, handicap indices, allowances, overrides) is an explicit function parameter. This is the architectural home of all scoring math (rule C13): pages and components consume the package, they never reimplement it. Usage, the exported API, and the WHS verification policy (formula constants, Rules of Handicapping clause citations, and the change procedure) are documented in [`src/lib/scoring/README.md`](src/lib/scoring/README.md).
 
 ## Project Structure
 
@@ -284,6 +289,10 @@ src/
     scorer/
       pin.ts         # server-side scorer PIN verification + 5-strikes/10-min lockout primitive
       pin-hash.ts    # canonical salted-hash recipe for scorer PINs (shared with event creation)
+    scoring/         # @teeboard/scoring — pure WHS/USGA scoring math package (see
+                     #  src/lib/scoring/README.md): the single home of all scoring
+                     #  computations; handicap layer (Course/Playing Handicap,
+                     #  stroke allocation) in M3-T001, formats/side games in M3-T002
     us-states.ts     # US state codes/names for the waitlist state selector
     email/
       resend-adapter.ts  # email adapter boundary around the Resend SDK
