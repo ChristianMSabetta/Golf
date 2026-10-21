@@ -40,13 +40,19 @@ export type WizardDraftData = {
 
 /**
  * Maximum step index a draft may navigate to: 0 (Basics only) until Basics
- * validates, 1 (Format) once it does, and 2 (Players) once Format
- * validates too. Steps 3–4 stay gated behind the later milestone tasks.
+ * validates, 1 (Format) once it does, 2 (Players) once Format validates
+ * too, and 3 (Groups) once the event has players attached — there is
+ * nothing to pair without a field. Step 4 (Extras) stays gated behind the
+ * later milestone tasks.
  */
-export function furthestStep(basics: unknown, format: unknown): number {
+export function furthestStep(
+  basics: unknown,
+  format: unknown,
+  playersAttached = 0,
+): number {
   if (validateBasics(basics) === null) return 0;
   if (validateFormat(format) === null) return 1;
-  return 2;
+  return playersAttached > 0 ? 3 : 2;
 }
 
 /** Per-step Zod validation → typed result or null. */
@@ -103,10 +109,12 @@ export function canNavigate(
 export function completedSteps(
   basics: unknown,
   format: unknown,
+  playersAttached = 0,
 ): WizardStepId[] {
   const completed: WizardStepId[] = [];
   if (validateBasics(basics) !== null) completed.push("basics");
   if (validateFormat(format) !== null) completed.push("format");
+  if (playersAttached > 0) completed.push("players");
   return completed;
 }
 

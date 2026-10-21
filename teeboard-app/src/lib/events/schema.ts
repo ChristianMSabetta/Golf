@@ -320,7 +320,7 @@ export const WIZARD_STEPS = [
     id: "groups",
     label: "Groups & teams",
     description: "Pairings, shotgun holes, and cart numbers.",
-    implemented: false,
+    implemented: true,
   },
   {
     id: "extras",

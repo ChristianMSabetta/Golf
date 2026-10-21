@@ -66,9 +66,9 @@ describe("wizard step registry", () => {
     expect(WIZARD_STEP_IDS).toHaveLength(5);
   });
 
-  it("marks exactly Basics, Format, and Players implemented through M4-T005", () => {
+  it("marks exactly Basics, Format, Players, and Groups implemented through M4-T006", () => {
     expect(WIZARD_STEPS.filter((step) => step.implemented).map((s) => s.id))
-      .toEqual(["basics", "format", "players"]);
+      .toEqual(["basics", "format", "players", "groups"]);
   });
 });
 
@@ -269,12 +269,22 @@ describe("step gating", () => {
     expect(furthestStep(VALID_BASICS, VALID_FORMAT)).toBe(2);
   });
 
+  it("unlocks Groups once players are attached", () => {
+    expect(furthestStep(VALID_BASICS, VALID_FORMAT, 4)).toBe(3);
+    expect(furthestStep(VALID_BASICS, VALID_FORMAT, 0)).toBe(2);
+  });
+
   it("marks completed steps from validated data", () => {
     expect(completedSteps(null, null)).toEqual([]);
     expect(completedSteps(VALID_BASICS, null)).toEqual(["basics"]);
     expect(completedSteps(VALID_BASICS, VALID_FORMAT)).toEqual([
       "basics",
       "format",
+    ]);
+    expect(completedSteps(VALID_BASICS, VALID_FORMAT, 2)).toEqual([
+      "basics",
+      "format",
+      "players",
     ]);
   });
 
