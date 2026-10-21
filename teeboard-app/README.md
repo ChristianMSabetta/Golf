@@ -216,6 +216,11 @@ The authenticated admin app lives under `src/app/admin/` and is **server-side pr
   - **Tees** — per-gender (men's/women's) rating and slope definitions; these are the WHS course-handicap inputs consumed at event time via `@teeboard/scoring`.
   - **Paste from scorecard** — the parser (`src/lib/course/parse-scorecard.ts`) turns typical printed/scorecard text into grid rows for confirmation: positional columns (`1 4 401 7`), labeled rows (`Hole 1 Par 4 380 yards SI 7` — either label order), tab/comma/pipe separators, 2–4 columns, headers, totals lines, and prose are all tolerated; junk lines are skipped, and the parsed grid still validates through the same schema before anything saves.
   - **Data path** — reads go through the request-bound client so RLS applies; the `saveCourse`/`deleteCourse` server actions re-authorize server-side (owner/head pro/event manager), enforce the club filter on every service-role write (the service role bypasses RLS, so the tenant guard is in the `.eq("club_id", …)` filters), write the three tables in a deliberate order (course → holes → tee_sets), and refuse to delete a course referenced by any event (`events.course_id` is `on delete restrict`). The editor's display-only par-total math lives in `src/lib/course/totals.ts`, outside the no-scoring-math guard's scope (see [The no-scoring-math guard](#the-no-scoring-math-guard)) — all WHS/USGA scoring math stays in `src/lib/scoring`.
+- **Players (`/admin/players`, M4-T002)** — the club player database:
+  - **Searchable, sortable table** — name, email, handicap index, event count, and last event played; search matches name/email/phone/WHS number and sorting rides the URL query (`q`, `sort`, `dir`) so the server component re-renders with server-side filtering. Reads go through the request-bound client so RLS applies; event aggregates load through the same policies via `events!inner`.
+  - **Inline handicap edit** — clicking the HI cell turns it into a validated input (`src/lib/players/schema.ts`: one decimal, −5…54 mirroring the `players` check constraint) that saves immediately through the role-gated `updateHandicap` server action.
+  - **CSV import/export** — `importPlayers` parses pasted or uploaded CSV (headers auto-detected; renamed columns like "Golfer Name", "HI", "WHS #" map automatically; headerless positional files fall back to name/email/phone/gender/HI/WHS), validates every row with the shared Zod schema, and upserts keyed on (name, email) so re-importing updates instead of duplicating; per-row errors are flagged by source line number. `exportPlayers` serializes the same canonical columns. Round-trip is covered by tests.
+  - **Duplicate detection & merge** — players sharing the same name AND email are grouped (`src/lib/players/duplicates.ts`, pure) and surfaced in a panel plus row flags. One click merges via the `mergePlayers` server action: blank keeper fields are backfilled from the source, `event_players` rows are re-pointed at the keeper (or dropped where the keeper already holds a slot — `event_players` is unique per event+player), and the source row is deleted — event history and score references survive through the re-pointed entries. All writes are service-role with the club filter enforced in every `.eq("club_id", …)`.
 
 **Club branding** flows from one place: `resolveClubBrand` (`src/lib/brand.ts`) resolves a club's stored settings into a typed `ClubBrand` (name, logo URL, normalized `#RRGGBB` primary color, IANA timezone), falling back to the env-var-backed product defaults for anything unset. No component hardcodes a club name, color, or logo. Staff management (invitations, plan limits) and super-admin surfaces arrive in Phase 3.
 
@@ -314,6 +319,8 @@ src/
       courses/       # course manager (M4-T001): list page + new/[id] editor —
                      # 9/18-hole scorecard grid, tees w/ rating+slope,
                      # paste-from-scorecard parser
+      players/       # club player database (M4-T002): searchable table with
+                     # inline handicap edits, CSV import/export, duplicate merge
       settings/      # club profile settings page (server component + form)
     auth/callback/   # magic-link code → session exchange (server-side)
     api/waitlist/    # POST route handler validating waitlist signups (Zod)
@@ -323,6 +330,8 @@ src/
     globals.css      # Tailwind theme: brand design tokens and dark TV palette
   components/
     admin/           # admin shell: nav, top bar, sign-out, club profile form
+                     # players/ — table w/ search+sort+inline HI edit, CSV panel,
+                     # duplicate merge panel (M4-T002)
     auth/            # sign-in + sign-up forms (useActionState server actions)
     landing/         # landing sections: header, hero, demo video slot, pricing,
                      # Cal.com booking section + inline embed, waitlist, footer
@@ -354,6 +363,17 @@ src/
                      #  club-filtered service-role writes, delete blocked when
                      #  an event references the course)
       course.test.ts # Vitest suite: schema bounds + parser variants
+    players/
+      schema.ts      # shared client/server Zod schemas: player rows, inline
+                     #  handicap edits (−5…54, one decimal), CSV import rows,
+                     #  list/search/sort params
+      csv.ts         # pure CSV parse (auto header mapping, quoted fields) +
+                     #  serializer (canonical export columns)
+      duplicates.ts   # pure duplicate grouping (name+email) + merge-keeper pick
+      server.ts      # RLS-respecting player reads + event aggregates + dup scan
+      actions.ts     # updateHandicap / importPlayers (upsert, per-row errors) /
+                     #  exportPlayers / mergePlayers (event-history-preserving)
+      players.test.ts # Vitest suite: handicap + CSV round-trip + duplicate logic
     scorer/
       pin.ts         # server-side scorer PIN verification + 5-strikes/10-min lockout primitive
       pin-hash.ts    # canonical salted-hash recipe for scorer PINs (shared with event creation)
