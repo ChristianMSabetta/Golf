@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/guard-scoring-boundary.mjs && next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "node scripts/guard-scoring-boundary.mjs && eslint",
+    "guard:scoring-boundary": "node scripts/guard-scoring-boundary.mjs",
+    "guard:scoring-boundary:prove": "node scripts/verify-scoring-guard.mjs",
     "test:rls": "node scripts/run-rls-tests.mjs",
     "test:scoring": "vitest run",
     "test:scoring:watch": "vitest",

@@ -19,8 +19,9 @@ The single home of every WHS/USGA scoring computation in TeeBoard. **Pure TypeSc
 - **Flights** — assignment from explicit handicap thresholds with an open-top flight absorbing everyone above.
 - **Payouts** — purse splits per position (`PAYOUT_PRESET_50_30_20` preset) with correct tie handling: a tie combines every spanned position's amount and splits it equally (`splitEvenly` largest-remainder redistribution — the combined amount is redistributed, never duplicated).
 - **Side games** — skins (gross and net, carryover on tied holes), closest-to-pin, long drive, longest putt. Calcutta and parimutuel are excluded on legal-risk grounds (constraint C24) and must never appear in this package's API.
+- **Standings movement (M3-T004)** — `computePositionMovements` / `strokePlayMovements`: the position change of every participant between two standings snapshots (delta, up/down/same/new). This lives in the package on purpose — deriving "how did positions change" is standings arithmetic, so the no-scoring-math guard covers pages/components that would otherwise compute it inline.
 
-The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) is **M3-T003, complete** — see "Verification suite" below.
+The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) is **M3-T003, complete** — see "Verification suite" below. The Phase 2 runnable proof page that consumes this package (M3-T004) lives at `src/app/proof/leaderboard` in the app repo; see the app README → "The integration proof page".
 
 ## Verification suite
 
@@ -35,6 +36,7 @@ The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) 
 - `flights.test.ts` / `payouts.test.ts` — flight thresholds and tie splitting (combine + redistribute, largest-remainder cents)
 - `sidegames.test.ts` — skins carryover chains, measured side games
 - `edgecases.test.ts` — boundary inputs: out-of-scale ranks, degenerate standings, empty members, gapped point scales
+- `movement.test.ts` — position-change movement: climbs/falls, ties, new/departed participants, empty snapshots
 
 Every expected value in the suite is derived by hand from the cited rule — the tests never mirror an implementation's output. The suite is fully self-contained: no environment variables, network, or database.
 
