@@ -1,24 +1,42 @@
 # @teeboard/scoring
 
-The single home of every WHS/USGA scoring computation in TeeBoard. **Pure TypeScript**: no I/O, no environment reads, no framework, database, or browser APIs — every course datum, handicap index, allowance, and Committee override is an explicit function parameter. All scoring math lives inside this package boundary (architectural rule C13); pages and components consume it, they never reimplement it.
+The single home of every WHS/USGA scoring computation in TeeBoard. **Pure TypeScript**: no I/O, no environment reads, no framework, database, or browser APIs — every course datum, handicap index, allowance, cap, payout split, and side-game setting is an explicit function parameter. All scoring math lives inside this package boundary (architectural rule C13); pages and components consume it, they never reimplement it.
 
-## Contents (Phase 2, M3-T001 — handicap layer)
+## Contents
+
+### Handicap layer (M3-T001)
 
 - **Course Handicap** — Rules of Handicapping 5.1 (18 holes) and 5.2 (9 holes), including plus (better-than-scratch) players and Committee overrides (5.6).
 - **Playing Handicap** — Rule 5.5: Course Handicap × allowance, rounded to a whole number, with per-competition allowance presets (`NET_COMPETITION_DEFAULT_ALLOWANCE` 95%, `FOUR_BALL_DEFAULT_ALLOWANCE` 85%).
 - **Handicap Index conversions** — Rule 5.2: HI18 → HI9 (÷ 2) and HI9 → HI18 (× 2 + 0.4).
 - **Per-hole stroke allocation** — from Playing Handicap and stroke index, handling 18-hole rounds, 9-hole rounds (dedicated 9-hole stroke indices, or the front/back nine of the 18-hole scale), plus handicaps, and players receiving strokes on every hole.
 
-Competition formats, maximum scores, tiebreaks, flights, payouts, and side games arrive with the later tasks of this milestone (M3-T002). Calcutta and parimutuel side games are excluded on legal-risk grounds and must never appear in this package's API.
+### Competition layer (M3-T002)
+
+- **Scorecards** — per-hole gross/net results under a maximum-score rule: none, fixed cap, double par, or the WHS default net double bogey (Rules of Handicapping 3.3b: par + 2 + strokes received, `NET_DOUBLE_BOGEY_STROKES_OVER_PAR`).
+- **Formats** — stroke play, scramble, best ball (four-ball), stableford, and shamble standings with gross/net/both bases, WHS allowance defaults (95% individual, 85% four-ball), and configurable team sizes (`DEFAULT_MIN_TEAM_SIZE`/`DEFAULT_MAX_TEAM_SIZE`, overridable per call). Scramble/shamble allowance percentages vary by local custom, so they are required inputs. Team handicap values are always derived through the handicap layer, never reimplemented.
+- **Tiebreaks** — USGA card-off (last 9 → 6 → 3 → hole-by-hole backwards, `CARD_OFF_LAST_HOLES_STAGES`) for individuals and teams alike; identical cards tie deterministically, partial cards lose.
+- **Flights** — assignment from explicit handicap thresholds with an open-top flight absorbing everyone above.
+- **Payouts** — purse splits per position (`PAYOUT_PRESET_50_30_20` preset) with correct tie handling: a tie combines every spanned position's amount and splits it equally (`splitEvenly` largest-remainder redistribution — the combined amount is redistributed, never duplicated).
+- **Side games** — skins (gross and net, carryover on tied holes), closest-to-pin, long drive, longest putt. Calcutta and parimutuel are excluded on legal-risk grounds (constraint C24) and must never appear in this package's API.
+
+The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) is built in M3-T003; the package ships with minimal smoke tests per layer so the Vitest wiring is proven from day one.
 
 ## Usage
 
 ```ts
 import {
   allocateStrokes,
-  computeHandicap,
+  computeBestBallStandings,
+  computePayouts,
+  computeScrambleStandings,
+  computeShambleStandings,
+  computeSkins,
+  computeStablefordStandings,
+  computeStrokePlayStandings,
+  defaultPayoutConfig,
   NET_COMPETITION_DEFAULT_ALLOWANCE,
-} from "@/lib/scoring/src";
+} from "@/lib/scoring";
 
 const result = computeHandicap({
   handicapIndex: 12.4,
@@ -30,13 +48,43 @@ const result = computeHandicap({
 
 const allocation = allocateStrokes(result.playingHandicap, course);
 // allocation.strokes[holeNumber] → strokes received (negative = strokes given back)
+
+// Stroke play: gross and net standings with WHS 95% allowance default.
+const standings = computeStrokePlayStandings({
+  course,
+  tee: course.tees["white"],
+  players: [{ id, handicapIndex, scores: { 1: 5, 2: 4 } }],
+  tiebreak: true, // USGA card-off on total ties
+});
+
+// Team formats: scramble takes one team score per hole plus members' indices;
+// best ball/shamble score each member's own ball under their own allowance.
+const scramble = computeScrambleStandings({
+  course,
+  tee,
+  allowanceFraction: 0.25, // local custom — explicit input, never assumed
+  teams: [{ id, scores: { 1: 4 }, members: [{ id, handicapIndex, scores }] }],
+});
+
+// Payouts: ties combine the positions they span and split equally.
+const payouts = computePayouts({
+  config: defaultPayoutConfig(30000), // 50 / 30 / 20 preset
+  standings: [{ id: "x", position: 1 }, { id: "y", position: 1 }],
+});
+
+// Skins: gross or net, carryover on tied holes.
+const skins = computeSkins({
+  config: { variant: "net", holeValue: 1000, maxScoreRule: { kind: "net_double_bogey" } },
+  holes: course.holeList,
+  entries: [{ id, scores: { 1: 5 }, strokesByHole: allocation.strokes }],
+});
 ```
 
-Inputs are plain values (`Course`, `TeeRating`, `Allowance`, overrides — see `src/types.ts`); there is no hidden configuration and nothing is read from the environment.
+Inputs are plain values (`Course`, `TeeRating`, `Allowance`, overrides, formats/side-game settings — see `src/types.ts` and the `FormatPlayer`/`SkinsConfig`/`PayoutConfig` shapes); there is no hidden configuration and nothing is read from the environment.
 
 ## WHS verification policy
 
-The World Handicap System formulas this package implements are reputation-critical: an implementation that diverges from the rulebook is worse than none. Every formula constant is therefore **named** in `src/constants.ts` and every arithmetic expression in `src/handicap.ts` / `src/strokes.ts` is a **literal transcription** of the cited clause, with the Rules of Handicapping rule number recorded in the source.
+The World Handicap System formulas this package implements are reputation-critical: an implementation that diverges from the rulebook is worse than none. Every formula constant is therefore **named** in `src/constants.ts` and every arithmetic expression in the scoring modules is a **literal transcription** of the cited clause, with the Rules of Handicapping rule number recorded in the source.
 
 Derived expectations in tests must come from the published rules — never from this implementation. Authoritative sources:
 
@@ -46,8 +94,10 @@ Derived expectations in tests must come from the published rules — never from 
   - **Rule 5.3** — the HI9 → HI18 × 2 + 0.4 dashed-line conversion (recorded in `constants.ts` as the smoothing term)
   - **Rule 5.5** — Playing Handicap and the 95% / 85% allowance defaults
   - **Rule 5.6** — Committee authority to set Course/Playing Handicaps for a competition (the override hooks)
+  - **Rule 3.3b** — Maximum Score and net double bogey (`par + 2 + strokes received`)
   - **Appendix E** — 9-hole competition guidance (stroke allocation and Playing Handicap on a 9-hole course)
-- USGA Course Rating & Slope Rating primers (the meaning of SR 113 and CR − par).
+- USGA *Rules of Golf* Appendix I / competition guidance: four-ball (best ball) and team formats, team-size bounds (2–4 per side), Stableford point scales, and the card-off matching of cards (last 9 / last 6 / last 3 / hole-by-hole backwards).
+- USGA *Recommendations to Committees* on prize allocation: tied players share the prizes of the positions they collectively occupy (the payout tie-splitting rule `payouts.ts` implements).
 
 Change procedure: if a formula needs to change, update `src/constants.ts` (and its clause citation) together with the code, and update the verification suite (M3-T003) expectations from the published rules — never adjust an expected value to match an implementation's output.
 
@@ -58,4 +108,4 @@ npm run test:scoring        # run the verification suite (Vitest)
 npm run test:scoring:watch  # watch mode
 ```
 
-The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) is built in M3-T003; the package ships with a minimal smoke test so the Vitest wiring is proven from day one. `src/` has its own strict `tsconfig.json` (`extends` the app config) so the package type-checks standalone.
+The dedicated verification suite (spec cases + 40+ edge cases, ≥95% coverage) is built in M3-T003; the package ships with minimal smoke tests per layer so the Vitest wiring is proven from day one. `src/` has its own strict `tsconfig.json` (`extends` the app config) so the package type-checks standalone.

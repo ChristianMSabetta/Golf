@@ -2,7 +2,7 @@
   "name": "@teeboard/scoring",
   "version": "0.1.0",
   "private": true,
-  "description": "Pure WHS/USGA scoring mathematics for TeeBoard: handicap computation, stroke allocation, and (in later tasks of this milestone) competition formats, tiebreaks, flights, payouts, and side games. No I/O, no environment reads, no framework, database, or browser dependencies.",
+  "description": "Pure WHS/USGA scoring mathematics for TeeBoard: handicap computation, stroke allocation, competition formats (stroke play, scramble, best ball, stableford, shamble), maximum-score rules, USGA card-off tiebreaks, flights, payouts, and side games. No I/O, no environment reads, no framework, database, or browser dependencies.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
