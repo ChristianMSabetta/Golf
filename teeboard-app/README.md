@@ -221,7 +221,8 @@ npm run build      # production build
 npm run start      # serve the production build
 npm run lint       # ESLint
 npm run test:rls   # pgTAP RLS/isolation suites (see Testing the database)
-npm run test:scoring   # lib/scoring Vitest suite (see The scoring package)
+npm run test:scoring          # lib/scoring Vitest verification suite (see The scoring package)
+npm run test:scoring:coverage # the suite + v8 coverage, ≥95% lines/branches enforced
 ```
 
 ## Testing the database
@@ -253,6 +254,7 @@ All WHS/USGA scoring mathematics lives in the pure TypeScript package at `src/li
 
 - **Handicap layer (M3-T001)** — Course/Playing Handicap computation (Rules of Handicapping 5.1/5.2/5.5/5.6, plus handicaps, Committee overrides) and per-hole stroke allocation.
 - **Competition layer (M3-T002)** — scorecards under maximum-score rules (net double bogey per RoH 3.3b, fixed caps), the five formats (stroke play, scramble, best ball, stableford, shamble) with WHS allowance defaults and configurable team sizes, USGA card-off tiebreaks (last 9/6/3, then hole-by-hole backwards), flights from explicit thresholds, payouts with the 50/30/20 preset and correct tie splitting (ties combine the spanned positions and split the combined amount — redistribution, never duplication), and side games (skins with carryover, closest-to-pin, long drive, longest putt). Calcutta and parimutuel side games are excluded on legal-risk grounds (constraint C24).
+- **Verification suite (M3-T003)** — the full Vitest suite in `src/lib/scoring/test/`: spec cases (e.g. HI 12.4 @ SR 128 / CR 71.2 / par 72 → CH 13 → PH 12) plus 40+ edge cases (9-hole modes, plus handicaps, tie-splitting at every position, carryover chains, card-off hole-by-hole, max-score interactions, empty/partial cards). Expected values are hand-derived from the cited rules, never mirrored from the implementation; ≥95% line/branch coverage is enforced by `npm run test:scoring:coverage`.
 
 Usage, the exported API, and the WHS verification policy (formula constants, Rules of Handicapping clause citations, and the change procedure) are documented in [`src/lib/scoring/README.md`](src/lib/scoring/README.md).
 

@@ -65,14 +65,19 @@ function holeRank(
 /**
  * Allocate strokes received per hole for one player.
  *
- * A player with Playing Handicap `ph` receives:
+ * A player with Playing Handicap `ph` receives `ph` strokes distributed
+ * over the scale in complete passes — one stroke on each hole per pass,
+ * from rank 1 (the hole that receives a stroke first) — with the
+ * remainder going to the lowest-ranked holes:
  *
- * - one stroke on each of the `scale` holes ranked 1..min(ph, scale) for ph ≥ 1,
- * - plus a second stroke on holes ranked 1..ph − scale when ph > scale
- *   (e.g. a 24 handicap gets two strokes on holes ranked 1–6),
- * - and a plus handicap (ph < 0) *gives* |ph| strokes, applied as negative
- *   allocation on the holes ranked 1..|ph| — the hardest-ranked holes that
- *   receive the adjustment first.
+ * - ph ≤ scale: one stroke on holes ranked 1..ph.
+ * - scale < ph ≤ 2×scale: one on every hole plus a second on ranks
+ *   1..ph − scale (e.g. a 24 on an 18-scale gets two on ranks 1–6).
+ * - beyond that the passes keep cycling: a 40 gets two on every hole
+ *   plus a third on ranks 1–4 (Rules of Handicapping 3.3 / Appendix E —
+ *   strokes are allocated against the stroke index, whatever its size).
+ * - a plus handicap (ph < 0) gives |ph| strokes back by the same
+ *   cycling, as a negative allocation.
  *
  * For 9-hole rounds the `mode` controls which part of an 18-hole stroke
  * index scale applies (see `StrokeIndexSelectionMode`); holes carrying an
@@ -93,17 +98,23 @@ export function allocateStrokes(
     }
     let allocated = 0;
     if (playingHandicap > 0) {
-      // First stroke on every hole ranked ≤ min(ph, scale) …
-      if (rank <= Math.min(playingHandicap, scale)) {
-        allocated += 1;
-      }
-      // … plus an additional stroke on holes ranked ≤ ph − scale.
-      if (playingHandicap > scale && rank <= playingHandicap - scale) {
+      // Full stroke on every hole per complete pass over the scale …
+      const fullPasses = Math.floor(playingHandicap / scale);
+      allocated += fullPasses;
+      // … plus one more on each hole ranked ≤ the remainder (Rules of
+      // Handicapping 3.3 / Appendix E: strokes cycle through the stroke
+      // index from rank 1, so a 40 on an 18-scale gets 2 + ranks 1–4).
+      const remainder = playingHandicap - fullPasses * scale;
+      if (rank <= remainder) {
         allocated += 1;
       }
     } else if (playingHandicap < 0) {
-      // Plus handicap: a stroke given back on the holes ranked 1..|ph|.
-      if (rank <= -playingHandicap) {
+      // Plus handicap: full strokes given back per complete pass, plus
+      // one more on each hole ranked ≤ the remainder (symmetric).
+      const fullPasses = Math.floor(-playingHandicap / scale);
+      allocated -= fullPasses;
+      const remainder = -playingHandicap - fullPasses * scale;
+      if (rank <= remainder) {
         allocated -= 1;
       }
     }
