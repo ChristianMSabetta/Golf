@@ -67,6 +67,7 @@ export function GroupsStep({
   attached,
   groups,
   readOnly = false,
+  onSaved = () => {},
 }: {
   eventId: string | null;
   draft: {
@@ -78,6 +79,8 @@ export function GroupsStep({
   attached: readonly GroupedAttachmentRow[];
   groups: readonly GroupRow[];
   readOnly?: boolean;
+  /** Notified after a successful save — the wizard refreshes its props. */
+  onSaved?: (savedAt: string) => void;
 }) {
   const teamSize = draft?.formatData?.teamSize ?? 1;
   const isShotgun = draft?.startType === "shotgun";
@@ -141,6 +144,13 @@ export function GroupsStep({
     WizardActionState,
     FormData
   >(saveGroupsStep, {});
+
+  // Persisted groups unlock the Extras & publish step (publishing mints a
+  // token per group) — the rail needs fresh server props after a save.
+  useEffect(() => {
+    if (state.saved && state.savedAt) onSaved(state.savedAt);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.saved, state.savedAt]);
 
   const draftShape = {
     teamSize,

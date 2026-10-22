@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useMemo, useState } from "react";
+import { useActionState, useEffect, useMemo, useState } from "react";
 import {
   BadgeCheck,
   CircleAlert,
@@ -92,15 +92,23 @@ function AttachedRow({
   attached,
   eventId,
   readOnly,
+  onRemoved,
 }: {
   attached: RosterAttachmentRow;
   eventId: string;
   readOnly: boolean;
+  onRemoved: (saved: boolean) => void;
 }) {
   const [state, formAction, pending] = useActionState<
     PlayersActionState,
     FormData
   >(removeEventPlayer, {});
+
+  // The roster shrank server-side — tell the step so it can refresh props.
+  useEffect(() => {
+    if (state.saved) onRemoved(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.saved]);
 
   return (
     <tr className="border-t">
@@ -140,11 +148,14 @@ export function PlayersStep({
   clubPlayers,
   attached,
   readOnly = false,
+  onRosterChanged = () => {},
 }: {
   eventId: string | null;
   clubPlayers: readonly RosterPlayerRow[];
   attached: readonly RosterAttachmentRow[];
   readOnly?: boolean;
+  /** Called after any roster action persists — the wizard refreshes props. */
+  onRosterChanged?: (saved: boolean) => void;
 }) {
   // ── CSV import state ──
   const [csvText, setCsvText] = useState("");
@@ -168,6 +179,13 @@ export function PlayersStep({
     RosterCommitState,
     FormData
   >(saveEventRoster, {});
+
+  // A persisted roster changes what the rail unlocks (Groups needs a
+  // non-empty field) and what the picker lists — refresh the tree.
+  useEffect(() => {
+    if (commit.saved) onRosterChanged(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commit.saved]);
 
   // ── Parse the CSV text into staged entries (auto column mapping) ──
   const csv = useMemo(() => rosterFromCsv(csvText), [csvText]);
@@ -336,6 +354,7 @@ export function PlayersStep({
                       attached={row}
                       eventId={eventId}
                       readOnly={readOnly}
+                      onRemoved={onRosterChanged}
                     />
                   ))}
                 </tbody>
