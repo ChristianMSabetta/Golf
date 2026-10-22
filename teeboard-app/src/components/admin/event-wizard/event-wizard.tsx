@@ -110,9 +110,32 @@ export function EventWizard({
     [router, step],
   );
 
-  const onFormatSaved = useCallback((at: string) => {
-    setSavedAt(at);
-  }, []);
+  /**
+   * Later steps (Format/Players/Groups) unlock from server props — the
+   * persisted draft, attached roster, saved groups — so every non-basics
+   * step save refreshes the tree. Without this the rail keeps rendering
+   * stale unlock state until a full reload, and the natural next click
+   * ("Groups" after attaching players) lands on a locked-looking rail.
+   */
+  const onStepSaved = useCallback(
+    (at: string) => {
+      setSavedAt(at);
+      if (eventId !== null) router.refresh();
+    },
+    [router, eventId],
+  );
+
+  /**
+   * Attach/remove is a server-side roster change: after the action answers
+   * the persisted roster has moved on, so the roster list, club database
+   * picker, and unlock state all need a refresh too.
+   */
+  const onRosterChanged = useCallback(
+    (saved: boolean) => {
+      if (saved && eventId !== null) router.refresh();
+    },
+    [router, eventId],
+  );
 
   /** A validated AI suggestion arrives: apply it and reset the badge set. */
   const onPrefill = useCallback((next: AiEventPrefill) => {
@@ -189,7 +212,7 @@ export function EventWizard({
           <FormatStep
             draft={draft}
             eventId={eventId}
-            onSaved={onFormatSaved}
+            onSaved={onStepSaved}
             readOnly={!canEdit}
             prefill={prefill}
             touched={markTouched}
@@ -215,6 +238,7 @@ export function EventWizard({
             clubPlayers={clubPlayers}
             attached={attachedPlayers}
             readOnly={!canEdit}
+            onRosterChanged={onRosterChanged}
           />
         ) : (
           <Card>
@@ -237,6 +261,7 @@ export function EventWizard({
             attached={groupedPlayers}
             groups={eventGroups}
             readOnly={!canEdit}
+            onSaved={onStepSaved}
           />
         ) : (
           <Card>

@@ -34,6 +34,16 @@ export const CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
 export const CLAUDE_API_VERSION = "2023-06-01";
 export const DEFAULT_MODEL = "claude-haiku-latest";
 
+/**
+ * The Messages API endpoint. `ANTHROPIC_BASE_URL` (optional) overrides the
+ * host — e.g. a self-hosted proxy — while the production default stays the
+ * real Anthropic URL. The path is fixed either way.
+ */
+export function claudeApiUrl(): string {
+  const base = process.env.ANTHROPIC_BASE_URL?.replace(/\/+$/, "");
+  return base ? `${base}/v1/messages` : CLAUDE_API_URL;
+}
+
 export type FetchLike = typeof fetch;
 
 /**
@@ -58,7 +68,7 @@ export async function callClaude(
   );
 
   try {
-    const response = await (input.fetchImpl ?? fetch)(CLAUDE_API_URL, {
+    const response = await (input.fetchImpl ?? fetch)(claudeApiUrl(), {
       method: "POST",
       headers: {
         "content-type": "application/json",
